@@ -190,19 +190,40 @@ class OlmClient {
   // Fetch the homework list. Uses OLM's official student courseware API first,
   // falling back to scraping if unavailable.
   async fetchHomeworks() {
-    const apiUrl = `${this.baseUrl}/classes/courseware/list-courseware-of-student`;
-    try {
-      const res = await this.request('GET', apiUrl, {
-        headers: {
-          'Accept': 'application/json, text/plain, */*',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Referer': `${this.baseUrl}/lop-hoc-cua-toi`,
-        },
-        timeout: 25000,
-      });
+    const allRawItems = [];
+    let page = 1;
+    let lastPage = 1;
 
-      if (res.status === 200 && res.data && Array.isArray(res.data.list)) {
-        const items = res.data.list.map((item) => {
+    try {
+      while (page <= lastPage) {
+        const apiUrl = `${this.baseUrl}/classes/courseware/list-courseware-of-student?page=${page}&limit=50`;
+        const res = await this.request('GET', apiUrl, {
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': `${this.baseUrl}/lop-hoc-cua-toi`,
+          },
+          timeout: 25000,
+        });
+
+        if (res.status === 200 && res.data && Array.isArray(res.data.list)) {
+          allRawItems.push(...res.data.list);
+          if (res.data.pagi_info?.last) {
+            lastPage = Number(res.data.pagi_info.last);
+          } else {
+            break;
+          }
+          if (res.data.list.length === 0 || !res.data.pagi_info?.hasNextPage) {
+            break;
+          }
+          page++;
+        } else {
+          break;
+        }
+      }
+
+      if (allRawItems.length > 0) {
+        const items = allRawItems.map((item) => {
           const hwUrl = item._url || item.url || '';
           const abs = hwUrl.startsWith('http') ? hwUrl : new URL(hwUrl, this.baseUrl).toString();
           const subject = item.subject?.title || (item.group?.group_name ? `Lớp ${item.group.group_name}` : '');
@@ -227,9 +248,7 @@ class OlmClient {
           return a.isDone ? 1 : -1;
         });
 
-        if (items.length > 0) {
-          return { url: apiUrl, items };
-        }
+        return { url: `${this.baseUrl}/classes/courseware/list-courseware-of-student`, items };
       }
     } catch (err) {
       console.warn(`[fetchHomeworks API] ${err.message}`);

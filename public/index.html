@@ -9,10 +9,11 @@
 <meta name="apple-mobile-web-app-title" content="OLM Solver">
 <meta name="theme-color" content="#0b0d12">
 <meta name="color-scheme" content="dark">
+<title>OLM Assistant</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon.svg">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/app.css?v=20261102b">
 </head>
 <body>
 
@@ -21,15 +22,23 @@
   <!-- ------------------------------------------------------- top bar -->
   <header class="topbar">
     <div class="topbar-title">
-      <span class="dot" id="conn-dot" title="Mất kết nối"></span>
+      <span class="dot" id="conn-dot" title="Trạng thái"></span>
       <span id="conn-label">Chưa đăng nhập</span>
     </div>
-    <button class="topbar-action" id="btn-settings" aria-label="Cài đặt">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-    </button>
+    <div class="topbar-actions">
+      <button class="topbar-action" id="btn-quick-notify" aria-label="Thông báo" title="Bật thông báo khi hoàn thành">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+      </button>
+      <button class="topbar-action" id="btn-settings" aria-label="Cài đặt">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <!-- ------------------------------------------------------ login view -->
@@ -37,11 +46,11 @@
     <div class="login-card">
       <div class="login-logo">OLM</div>
       <h1>Đăng nhập OLM</h1>
-      <p class="muted">Nhập tài khoản học tập của bạn. Mật khẩu không được lưu lại trên máy — chỉ session token.</p>
+      <p class="muted">Đăng nhập tài khoản học sinh OLM. Hệ thống sẽ duy trì đăng nhập vĩnh viễn trên iPhone/thiết bị này trừ khi bạn chủ động đăng xuất.</p>
 
       <label class="field">
-        <span>Tài khoản</span>
-        <input id="in-username" type="text" autocomplete="username" inputmode="text" placeholder="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <span>Tài khoản OLM</span>
+        <input id="in-username" type="text" autocomplete="username" inputmode="text" placeholder="Tên đăng nhập" autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
 
       <label class="field">
@@ -53,72 +62,139 @@
 
       <button class="btn btn-primary btn-block" id="btn-login">Đăng nhập</button>
       <button class="btn btn-ghost btn-block" id="btn-login-rescan">Quét lại bài tập</button>
+
+      <div class="login-hint">
+        <span>🔒 Tự động ghi nhớ phiên đăng nhập vĩnh viễn</span>
+      </div>
     </div>
   </section>
 
   <!-- ---------------------------------------------------- homework view -->
   <section class="view" id="view-homework" hidden>
-    <div class="toolbar" style="flex-wrap: wrap; gap: 8px;">
-      <div class="toolbar-info">
-        <strong id="hw-count">0</strong> bài
+    <!-- Quick Statistics -->
+    <div class="stats-row">
+      <div class="stat-pill active" id="stat-todo-card">
+        <span class="stat-num" id="stat-todo">0</span>
+        <span class="stat-lbl">Chưa làm</span>
       </div>
-      <div class="toolbar-actions" style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="btn btn-mini" id="btn-filter-all">Tất cả (0)</button>
-        <button class="btn btn-mini active" id="btn-filter-todo">Chưa làm (0)</button>
-        <button class="btn btn-mini" id="btn-filter-done">Đã xong (0)</button>
-        <button class="btn btn-mini" id="btn-filter-expired">Hết hạn (0)</button>
-        <button class="btn btn-mini" id="btn-refresh">Quét lại</button>
-        <button class="btn btn-mini" id="btn-select-all">Chọn tất cả</button>
+      <div class="stat-pill" id="stat-retry-card">
+        <span class="stat-num" id="stat-retry">0</span>
+        <span class="stat-lbl">Luyện tập lại</span>
       </div>
-    </div>
-
-    <div style="padding: 10px 16px; margin: 8px 16px 12px; background: var(--bg-elev); border-radius: var(--radius); border: 1px solid var(--border);">
-      <div style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">Dán link bài tập cần làm (từ OLM):</div>
-      <div style="display: flex; gap: 8px;">
-        <input id="in-custom-hw" type="url" placeholder="https://olm.vn/chu-de/..." style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elev-2); color: var(--text); font-size: 13px;" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <button class="btn btn-primary btn-mini" id="btn-add-hw" style="white-space: nowrap;">+ Thêm bài</button>
+      <div class="stat-pill" id="stat-done-card">
+        <span class="stat-num" id="stat-done">0</span>
+        <span class="stat-lbl">Đã xong</span>
       </div>
     </div>
 
+    <!-- Filter Pills (Scrollable horizontally) -->
+    <div class="filter-bar">
+      <div class="filter-scroll">
+        <button class="filter-chip active" id="btn-filter-todo">Chưa làm (<span id="cnt-todo">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-retry">🔄 Luyện tập lại (<span id="cnt-retry">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-all">Tất cả (<span id="cnt-all">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-done">Đã xong (<span id="cnt-done">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-expired">Hết hạn (<span id="cnt-expired">0</span>)</button>
+      </div>
+    </div>
+
+    <!-- Sub-actions strip -->
+    <div class="hw-subtoolbar">
+      <div class="hw-subtoolbar-left">
+        <button class="btn-sub" id="btn-select-all">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          <span id="txt-select-all">Chọn tất cả</span>
+        </button>
+        <button class="btn-sub" id="btn-refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Quét lại
+        </button>
+      </div>
+      <button class="btn-sub btn-sub-accent" id="btn-toggle-add-hw">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Dán link bài
+      </button>
+    </div>
+
+    <!-- Add Custom Homework Box (Collapsible) -->
+    <div id="box-custom-hw" class="add-hw-box" hidden>
+      <div class="add-hw-header">
+        <span>Thêm bài tập bằng link OLM:</span>
+        <button class="btn-close-box" id="btn-close-add-hw">✕</button>
+      </div>
+      <div class="add-hw-row">
+        <input id="in-custom-hw" type="url" placeholder="https://olm.vn/chu-de/... hoặc bài tập..." autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button class="btn btn-primary btn-mini" id="btn-add-hw">+ Thêm</button>
+      </div>
+    </div>
+
+    <!-- Homework Cards List -->
     <div id="hw-list" class="card-list"></div>
 
+    <!-- Sticky Bottom Bar -->
     <div class="sticky-action">
       <div class="sticky-summary" id="sticky-summary">Chưa chọn bài nào</div>
-      <button class="btn btn-primary" id="btn-start" disabled>Bắt đầu làm</button>
+      <button class="btn btn-primary" id="btn-start" disabled>Bắt đầu làm bài</button>
     </div>
   </section>
 
   <!-- ------------------------------------------------------- log view -->
   <section class="view" id="view-log" hidden>
-    <div class="toolbar">
-      <div class="toolbar-info">
-        <span class="pill" id="run-status">idle</span>
-        <span id="run-submit-at" class="muted"></span>
-      </div>
-      <div class="toolbar-actions">
+    <div class="log-header-card">
+      <div class="log-status-row">
+        <div class="log-status-left">
+          <span class="pill" id="run-status">Sẵn sàng</span>
+          <span id="run-progress-text" class="run-progress-lbl">Chưa có bài nào đang chạy</span>
+        </div>
         <button class="btn btn-mini" id="btn-clear-log">Xoá log</button>
       </div>
+      <div id="run-submit-at" class="muted small" style="margin-top: 4px;"></div>
     </div>
+
+    <!-- Individual Homework Log Selector (Hiện log từng bài) -->
+    <div class="hw-log-section">
+      <div class="hw-log-header">
+        <span>Xem log từng bài:</span>
+      </div>
+      <div class="hw-log-chips" id="hw-log-chips">
+        <button class="hw-log-chip active" data-hw-id="all">
+          <span>📋 Tất cả bài</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Log Console Window -->
     <div id="log-list" class="log-list"></div>
   </section>
 
   <!-- --------------------------------------------------- settings view -->
   <section class="view" id="view-settings" hidden>
     <div class="settings-group">
-      <h2>Mức điểm mong muốn (8 – 10 điểm)</h2>
-      <p class="muted small">Chọn mức điểm mục tiêu để nộp bài.</p>
+      <h2>Mức điểm mong muốn</h2>
+      <p class="muted small">Tự động tính toán số câu đúng/sai để đạt mức điểm mong muốn.</p>
       <div class="radio-list" id="opt-score">
-        <label class="radio"><input type="radio" name="score" value="10" checked><span><strong>10 Điểm (Tối đa)</strong><em>Đúng 100% tất cả các câu</em></span></label>
-        <label class="radio"><input type="radio" name="score" value="9"><span><strong>9 Điểm</strong><em>Sai ~10% câu ngẫu nhiên</em></span></label>
-        <label class="radio"><input type="radio" name="score" value="8"><span><strong>8 Điểm</strong><em>Sai ~20% câu ngẫu nhiên</em></span></label>
+        <label class="radio"><input type="radio" name="score" value="10" checked><span><strong>10 Điểm (Tối đa)</strong><em>Đúng 100% tất cả các câu hỏi</em></span></label>
+        <label class="radio"><input type="radio" name="score" value="9"><span><strong>9 Điểm</strong><em>Sai ngẫu nhiên ~10% câu</em></span></label>
+        <label class="radio"><input type="radio" name="score" value="8"><span><strong>8 Điểm</strong><em>Sai ngẫu nhiên ~20% câu</em></span></label>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h2>Số bài giải cùng lúc (Đa luồng)</h2>
+      <p class="muted small">Làm cùng lúc nhiều bài tập song song để tiết kiệm thời gian.</p>
+      <div class="segmented" id="opt-concurrency">
+        <button data-concurrency="1">1 bài</button>
+        <button data-concurrency="2" class="active">2 bài (khuyên dùng)</button>
+        <button data-concurrency="3">3 bài</button>
+        <button data-concurrency="4">4 bài</button>
       </div>
     </div>
 
     <div class="settings-group">
       <h2>Thời gian nộp bài sau khi giải xong</h2>
-      <p class="muted small">Tự động nộp bài sau khoảng thời gian này kể từ khi giải hết các câu.</p>
+      <p class="muted small">Trì hoãn thời điểm nộp bài sau khi giải xong toàn bộ câu hỏi.</p>
       <div class="radio-list" id="opt-delay">
-        <label class="radio"><input type="radio" name="delay" value="0" checked><span><strong>Nộp ngay lập tức</strong><em>Nộp ngay sau khi làm xong câu cuối (1–2 giây)</em></span></label>
+        <label class="radio"><input type="radio" name="delay" value="0" checked><span><strong>Nộp ngay lập tức</strong><em>Nộp ngay sau khi làm xong câu cuối</em></span></label>
         <label class="radio"><input type="radio" name="delay" value="1"><span><strong>Sau 1 phút</strong><em>Chờ 1 phút rồi mới nộp</em></span></label>
         <label class="radio"><input type="radio" name="delay" value="3"><span><strong>Sau 3 phút</strong><em>Chờ 3 phút rồi mới nộp</em></span></label>
         <label class="radio"><input type="radio" name="delay" value="5"><span><strong>Sau 5 phút</strong><em>Chờ 5 phút rồi mới nộp</em></span></label>
@@ -126,17 +202,27 @@
     </div>
 
     <div class="settings-group">
-      <h2>Tốc độ</h2>
+      <h2>Thông báo khi giải xong (iPhone / Web)</h2>
+      <p class="muted small">Nhận thông báo đến điện thoại ngay khi hoàn thành bài tập, kể cả khi thoát ra màn hình chính.</p>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn btn-primary" id="btn-enable-notify" style="flex:1;">🔔 Bật thông báo iPhone</button>
+        <button class="btn btn-ghost" id="btn-test-notify">Thử thông báo</button>
+      </div>
+      <p class="muted small" id="notify-status" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="settings-group">
+      <h2>Tốc độ thao tác</h2>
       <div class="segmented" id="opt-speed">
         <button data-speed="slow">Chậm</button>
         <button data-speed="normal" class="active">Vừa</button>
         <button data-speed="fast">Nhanh</button>
       </div>
-      <p class="muted small">Mỗi hành động chậm hơn sẽ giảm khả năng bị phát hiện.</p>
+      <p class="muted small">Thao tác người thật tự nhiên (di chuột, gõ phím ngẫu nhiên).</p>
     </div>
 
     <div class="settings-group">
-      <h2>Engine</h2>
+      <h2>Engine giải bài</h2>
       <div class="segmented" id="opt-engine">
         <button data-engine="auto" class="active">Auto</button>
         <button data-engine="http">HTTP</button>
@@ -146,8 +232,8 @@
     </div>
 
     <div class="settings-group">
-      <h2>Máy chủ Backend (iOS / Mạng LAN)</h2>
-      <p class="muted small">Khi chạy trên iPhone, nhập địa chỉ IP máy tính chạy server hoặc URL VPS (ví dụ: <code>http://192.168.1.15:3000</code>). Để trống nếu chạy web trực tiếp trên cùng máy.</p>
+      <h2>Máy chủ Backend (iOS App / LAN)</h2>
+      <p class="muted small">Khi cài IPA trên iPhone hoặc mở qua mạng nội bộ, nhập URL máy chủ backend (VD: <code>http://192.168.1.15:3000</code> hoặc domain VPS). Để trống nếu chạy trực tiếp.</p>
       <label class="field">
         <span>Địa chỉ Server Backend</span>
         <input id="in-server-url" type="url" placeholder="http://192.168.1.x:3000" autocapitalize="off" autocorrect="off" spellcheck="false">
@@ -160,32 +246,27 @@
     </div>
 
     <div class="settings-group">
-      <h2>Phiên</h2>
-      <button class="btn btn-danger btn-block" id="btn-logout">Đăng xuất</button>
-    </div>
-
-    <div class="settings-group">
-      <h2>Giới hạn</h2>
-      <p class="muted small">Tối đa 1 bài / 10 phút. Nghỉ 5–20 phút giữa các bài. Có thể dừng run bất kỳ lúc nào.</p>
-      <button class="btn btn-block" id="btn-stop">Dừng run hiện tại</button>
+      <h2>Tài khoản & Phiên đăng nhập</h2>
+      <p class="muted small" id="session-username-info">Tài khoản OLM đã đăng nhập sẽ được duy trì vĩnh viễn trên thiết bị này.</p>
+      <button class="btn btn-danger btn-block" id="btn-logout">Đăng xuất tài khoản</button>
     </div>
   </section>
 
   <!-- ---------------------------------------------------------- tabbar -->
   <nav class="tabbar" id="tabbar">
-    <button data-tab="login" class="tab active">
+    <button data-tab="login" class="tab active" id="tab-nav-login">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
       <span>Đăng nhập</span>
     </button>
-    <button data-tab="homework" class="tab">
+    <button data-tab="homework" class="tab" id="tab-nav-homework">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       <span>Bài tập</span>
     </button>
-    <button data-tab="log" class="tab">
+    <button data-tab="log" class="tab" id="tab-nav-log">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
       <span>Log</span>
     </button>
-    <button data-tab="settings" class="tab">
+    <button data-tab="settings" class="tab" id="tab-nav-settings">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       <span>Cấu hình</span>
     </button>
@@ -193,8 +274,12 @@
 
 </div>
 
-<script src="js/api.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/app.js"></script>
+<!-- Backwards compatibility fallback anchors for stale scripts -->
+<span id="hw-count" style="display:none;"></span>
+<button id="btn-stop" style="display:none;"></button>
+
+<script src="js/api.js?v=20261102b"></script>
+<script src="js/ui.js?v=20261102b"></script>
+<script src="js/app.js?v=20261102b"></script>
 </body>
 </html>

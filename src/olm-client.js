@@ -229,6 +229,18 @@ class OlmClient {
           const subject = item.subject?.title || (item.group?.group_name ? `Lớp ${item.group.group_name}` : '');
           const status = item.isDone ? 'Đã xong' : (item.isExpired ? 'Hết hạn' : 'Chưa làm');
           const deadline = item.expiredDate || (item.deadlineTimestamp ? new Date(item.deadlineTimestamp * 1000).toLocaleDateString('vi-VN') : '');
+          const rawStr = JSON.stringify(item);
+          const canRetry = Boolean(
+            item.can_retry ||
+            item.allow_redo ||
+            item.practice_again ||
+            item.canPracticeAgain ||
+            item.is_redo ||
+            (item.record && (item.record.can_retry || item.record.allow_redo || item.record.practice_again)) ||
+            (item.btn_text && /luyện\s*tập|làm\s*lại/i.test(item.btn_text)) ||
+            /luyện\s*tập\s*lại|làm\s*lại|practice_again/i.test(rawStr) ||
+            (item.isDone && !item.isExpired && item.can_retry !== false)
+          );
           return {
             id: String(item._id || item.id_skill || item.title),
             title: item.title,
@@ -239,6 +251,7 @@ class OlmClient {
             teacher: item.user?.name || '',
             isDone: !!item.isDone,
             isExpired: !!item.isExpired,
+            canRetry,
             score: item.record?.score_10 ?? null,
           };
         });
@@ -331,6 +344,9 @@ function parseHomeworks(html, baseUrl) {
     if (seen.has(key)) return;
     seen.add(key);
 
+    const fullText = $el.text();
+    const canRetry = /luyện\s*tập|làm\s*lại|thi\s*lại|luyentaplai/i.test(fullText);
+
     items.push({
       id: String(id),
       title,
@@ -338,6 +354,9 @@ function parseHomeworks(html, baseUrl) {
       deadline: deadlineText,
       status: statusText || 'unknown',
       url: abs,
+      isDone: /đã\s*xong|hoàn\s*thành|đã\s*làm/i.test(statusText),
+      isExpired: /hết\s*hạn/i.test(statusText),
+      canRetry,
     });
   };
 

@@ -138,19 +138,30 @@ function resolveSubmitWindow(windowSpec, now = new Date()) {
 // low  -> ~55% wrong
 // random -> anywhere in 0..60%
 function wrongRatioForScore(scoreTarget) {
-  switch (scoreTarget) {
+  const targetStr = String(scoreTarget || '10').trim().toLowerCase();
+  switch (targetStr) {
+    case '10':
     case 'max':
-      return 0;
+      return 0; // 10 điểm = giải đúng tuyệt đối 100%
+    case '9':
     case 'high':
-      return rand(0.18, 0.3);
+      return 0.10;
+    case '8':
     case 'mid':
-      return rand(0.3, 0.42);
+      return 0.20;
+    case '7':
+      return 0.30;
     case 'low':
-      return rand(0.5, 0.62);
+      return 0.50;
     case 'random':
-      return Math.random() * 0.6;
+      return Math.random() * 0.4;
     default:
-      return rand(0.18, 0.3);
+      if (/^\d+(\.\d+)?$/.test(targetStr)) {
+        const num = Number(targetStr);
+        if (num >= 10) return 0;
+        return Math.max(0, (10 - num) / 10);
+      }
+      return 0;
   }
 }
 

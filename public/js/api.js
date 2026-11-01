@@ -7,6 +7,7 @@ const Api = (() => {
   const TOKEN_KEY = 'olm.sessionId';
   const SETTINGS_KEY = 'olm.settings';
   const SERVER_URL_KEY = 'olm.serverUrl';
+  const AUTH_KEY = 'olm.auth';
 
   function getServerUrl() {
     try {
@@ -37,6 +38,35 @@ const Api = (() => {
     try {
       if (value) localStorage.setItem(TOKEN_KEY, value);
       else localStorage.removeItem(TOKEN_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  function saveCredentials(username, password) {
+    try {
+      if (username && password) {
+        localStorage.setItem(AUTH_KEY, JSON.stringify({ username, password }));
+      } else {
+        localStorage.removeItem(AUTH_KEY);
+      }
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  function getCredentials() {
+    try {
+      const raw = localStorage.getItem(AUTH_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearCredentials() {
+    try {
+      localStorage.removeItem(AUTH_KEY);
     } catch {
       /* storage unavailable */
     }
@@ -93,6 +123,9 @@ const Api = (() => {
     setToken,
     getServerUrl,
     setServerUrl,
+    saveCredentials,
+    getCredentials,
+    clearCredentials,
 
     health: () => request('/api/health'),
     login: (username, password) => request('/api/login', { method: 'POST', body: { username, password } }),

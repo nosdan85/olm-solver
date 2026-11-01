@@ -1,6 +1,6 @@
 'use strict';
 
-// DOM helpers and small UI widgets.
+// DOM helpers, logging and notifications.
 
 const UI = (() => {
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -56,23 +56,48 @@ const UI = (() => {
     };
   }
 
-  // Log pane writer.
+  // Log pane writer with per-homework filtering support
   const logList = () => document.getElementById('log-list');
   const logBuffer = [];
+  let currentLogFilter = 'all';
 
   function appendLog(entry) {
     logBuffer.push(entry);
+    if (logBuffer.length > 2000) logBuffer.shift();
+
+    // Check if this entry should be shown in the current filter view
+    if (currentLogFilter !== 'all' && entry.hwId && String(entry.hwId) !== String(currentLogFilter)) {
+      return;
+    }
+
     const list = logList();
     if (!list) return;
 
+    renderLogLine(entry, list);
+    while (list.children.length > 600) list.removeChild(list.firstChild);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function renderLogLine(entry, list) {
     const line = el('div', { class: `log-line ${entry.level || 'info'}` });
     line.append(el('span', { class: 'log-time', text: formatTime(entry.ts) }));
     line.append(el('span', { class: 'log-msg', text: entry.message }));
     list.append(line);
+  }
 
-    // Keep the DOM bounded on long runs.
-    while (list.children.length > 500) list.removeChild(list.firstChild);
+  function setLogFilter(hwId) {
+    currentLogFilter = hwId || 'all';
+    const list = logList();
+    if (!list) return;
+    list.innerHTML = '';
 
+    const filtered = currentLogFilter === 'all'
+      ? logBuffer
+      : logBuffer.filter((e) => !e.hwId || String(e.hwId) === String(currentLogFilter));
+
+    for (const entry of filtered.slice(-600)) {
+      renderLogLine(entry, list);
+    }
     list.scrollTop = list.scrollHeight;
   }
 
@@ -92,20 +117,26 @@ const UI = (() => {
   function setRunStatus(status) {
     const pill = document.getElementById('run-status');
     if (!pill) return;
-    pill.textContent = status;
+    const labels = {
+      idle: 'Sẵn sàng',
+      running: 'Đang giải bài',
+      done: 'Đã hoàn thành',
+      error: 'Có lỗi',
+    };
+    pill.textContent = labels[status] || status;
     pill.className = `pill ${status === 'running' ? 'running' : status === 'done' ? 'done' : status === 'error' ? 'error' : ''}`;
   }
 
   function toast(message, kind = 'info') {
-    const view = document.getElementById('view-login');
-    let box = document.getElementById('login-error');
+    let box = document.getElementById('toast');
     if (!box) {
       box = el('div', { id: 'toast', class: `alert alert-${kind}` });
       box.style.position = 'fixed';
       box.style.left = '16px';
       box.style.right = '16px';
-      box.style.bottom = 'calc(var(--tabbar-h) + var(--safe-bottom) + 16px)';
+      box.style.bottom = 'calc(var(--tabbar-h) + var(--safe-bottom) + 14px)';
       box.style.zIndex = '100';
+      box.style.boxShadow = '0 8px 24px rgba(0,0,0,0.5)';
       document.body.append(box);
     }
     box.className = `alert alert-${kind}`;
@@ -115,8 +146,99 @@ const UI = (() => {
     box._timer = setTimeout(() => {
       box.hidden = true;
     }, 4000);
-    return view;
   }
 
-  return { $, $$, el, escapeHtml, formatTime, formatDateTime, debounce, appendLog, clearLog, setStatus, setRunStatus, toast };
+  // Play a brief pleasant completion chime
+  function playBeep() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.45);
+    } catch {
+      /* audio autoplay restricted */
+    }
+  }
+
+  // Native & Web notification dispatch for iPhone / Mobile
+  async function notify(title, body) {
+    playBeep();
+    if (navigator.vibrate) {
+      try { navigator.vibrate([200, 100, 200]); } catch {}
+    }
+
+    // 1. Capacitor Native Push/Local Notifications (if running as native iOS App)
+    if (window.Capacitor?.Plugins?.LocalNotifications) {
+      try {
+        await window.Capacitor.Plugins.LocalNotifications.schedule({
+          notifications: [
+            {
+              id: Math.floor(Date.now() % 100000),
+              title,
+              body,
+              schedule: { at: new Date(Date.now() + 500) },
+              sound: 'default',
+            },
+          ],
+        });
+        return;
+      } catch (err) {
+        console.warn('Capacitor notification error:', err);
+      }
+    }
+
+    // 2. Service Worker Notification (iOS 16.4+ Web Push & PWA)
+    if ('serviceWorker' in navigator && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, {
+            body,
+            icon: '/icons/icon.svg',
+            badge: '/icons/icon.svg',
+            tag: 'olm-completed',
+            renotify: true,
+          });
+          return;
+        }
+      } catch {
+        /* fallback */
+      }
+    }
+
+    // 3. Fallback Web Notification API
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(title, { body, icon: '/icons/icon.svg' });
+      } catch {}
+    }
+  }
+
+  return {
+    $,
+    $$,
+    el,
+    escapeHtml,
+    formatTime,
+    formatDateTime,
+    debounce,
+    appendLog,
+    clearLog,
+    setLogFilter,
+    setStatus,
+    setRunStatus,
+    toast,
+    notify,
+    playBeep,
+  };
 })();

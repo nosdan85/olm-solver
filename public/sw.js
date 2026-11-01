@@ -1,6 +1,4 @@
-'use strict';
-
-const CACHE_NAME = 'olm-pwa-v1';
+const CACHE_NAME = 'olm-pwa-v3';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -9,14 +7,13 @@ const APP_SHELL = [
   '/js/api.js',
   '/js/ui.js',
   '/js/app.js',
-  '/icons/icon-180.png',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
+  '/icons/icon.svg',
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
   );
 });
 
@@ -34,8 +31,7 @@ self.addEventListener('fetch', (event) => {
   // API calls must always be online. Never serve cached session / homework data.
   if (url.pathname.startsWith('/api/')) return;
 
-  // App shell: cache-first so the UI opens offline. Navigations fall back to
-  // the cached index, while static assets use stale-while-revalidate.
+  // Navigations: Network first, fall back to cached index
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request).catch(() => caches.match('/index.html'))
@@ -43,6 +39,21 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Scripts and CSS: Network first to ensure instant updates, cache as fallback
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.json')) {
+    event.respondWith(
+      fetch(event.request).then((response) => {
+        if (response.ok && url.origin === self.location.origin) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Other assets (images, icons): Stale-while-revalidate
   event.respondWith(
     caches.match(event.request).then((cached) => {
       const fresh = fetch(event.request).then((response) => {
@@ -53,6 +64,18 @@ self.addEventListener('fetch', (event) => {
         return response;
       }).catch(() => cached);
       return cached || fresh;
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (client.url && 'focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow('/');
     })
   );
 });

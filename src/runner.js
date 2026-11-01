@@ -11,16 +11,25 @@ bus.setMaxListeners(200);
 // Run state keyed by runId.
 const runs = new Map();
 
-function log(runId, level, message) {
+function log(runId, level, message, hwId = null) {
   const entry = {
     ts: Date.now(),
     level, // info | warn | error | success
     message: String(message),
+    hwId: hwId ? String(hwId) : null,
   };
   const run = runs.get(runId);
   if (run) {
     run.logs.push(entry);
     if (run.logs.length > 1000) run.logs.splice(0, run.logs.length - 1000);
+    if (hwId) {
+      const hw = run.homeworks.find((h) => String(h.id) === String(hwId));
+      if (hw) {
+        if (!hw.logs) hw.logs = [];
+        hw.logs.push(entry);
+        if (hw.logs.length > 300) hw.logs.splice(0, hw.logs.length - 300);
+      }
+    }
   }
   bus.emit('log', { runId, ...entry });
 }
@@ -68,26 +77,37 @@ async function startRun({ session, homeworks, config, sessionId }) {
     sessionId,
     status: 'running',
     startedAt: Date.now(),
-    homeworks: homeworks.map((h) => ({ ...h, status: 'pending', result: null })),
+    homeworks: homeworks.map((h) => ({
+      ...h,
+      status: 'pending',
+      result: null,
+      logs: [],
+      progress: { scanned: 0, solved: 0, filled: 0, failed: 0, total: 0 },
+    })),
     logs: [],
     config,
     submitAt: null,
+    phase: 'starting',
+    progress: { scanned: 0, solved: 0, filled: 0, failed: 0, total: 0 },
   };
   runs.set(runId, run);
 
-  log(runId, 'info', `Run started: ${homeworks.length} homework(s), target score "${config.scoreTarget}"`);
-  emit(runId, 'started', { homeworks: run.homeworks.length });
+  const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
+  log(runId, 'info', `Bắt đầu tiến trình: ${homeworks.length} bài tập, mức điểm "${config.scoreTarget}", đa luồng: ${concurrency} bài/lúc`);
+  emit(runId, 'started', { homeworks: run.homeworks.length, concurrency });
 
   // Do the work in the background so the HTTP request returns immediately.
   (async () => {
     try {
       await executeRun(run, session, config);
       run.status = 'done';
-      log(runId, 'success', 'Run finished');
+      run.phase = 'done';
+      log(runId, 'success', `Đã hoàn thành toàn bộ ${homeworks.length} bài tập!`);
       emit(runId, 'done', { status: 'done' });
     } catch (err) {
       run.status = 'error';
-      log(runId, 'error', `Run failed: ${err.message}`);
+      run.phase = 'error';
+      log(runId, 'error', `Tiến trình gặp lỗi: ${err.message}`);
       emit(runId, 'error', { message: err.message });
     }
   })();
@@ -100,152 +120,182 @@ async function executeRun(run, session, config) {
   H.setSpeed(H.SPEEDS[H_speed] ? H.SPEEDS[H_speed].scale : 1);
 
   const { OlmClient } = require('./olm-client');
-  const client = OlmClient.fromSerialized(session.cookieJar, session.ua);
   const browserEngine = require('./browser-engine');
 
   const useBrowser = config.engine === 'browser' || (config.engine === 'auto' && browserEngine.isAvailable());
   let browser = null;
 
   if (useBrowser) {
-    log(run.id, 'info', 'Using browser automation engine');
+    log(run.id, 'info', 'Khởi tạo Browser automation engine...');
     try {
       browser = await browserEngine.launch();
     } catch (err) {
-      log(run.id, 'warn', `Browser launch failed (${err.message}); falling back to HTTP engine`);
+      log(run.id, 'warn', `Khởi tạo browser thất bại (${err.message}); chuyển sang HTTP engine`);
       browser = null;
     }
   }
 
-  const rateGuard = new H.RateGuard({ minGapMs: 2000 });
+  const rateGuard = new H.RateGuard({ minGapMs: 1500 });
   const windowSpec = config.submitWindow || null;
+  const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
 
-  try {
-    for (let hi = 0; hi < run.homeworks.length; hi++) {
-      const hw = run.homeworks[hi];
-      run.homeworks[hi].status = 'running';
-      emit(run.id, 'homework-status', { index: hi, status: 'running', title: hw.title });
+  async function processHomework(hi) {
+    const hw = run.homeworks[hi];
+    hw.status = 'running';
+    emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'running', title: hw.title });
+    log(run.id, 'info', `▶ Bắt đầu xử lý bài [${hi + 1}/${run.homeworks.length}]: "${hw.title}"`, hw.id);
 
-      log(run.id, 'info', `=== ${hw.title} ===`);
-
-      if (browser) {
-        try {
-          const result = await browserEngine.solveHomework(browser, {
-            homework: hw,
-            session,
-            config,
-            log: (lvl, msg) => log(run.id, lvl, msg),
-            emit: (type, payload) => emit(run.id, type, payload),
-          });
-          run.homeworks[hi].status = 'done';
-          run.homeworks[hi].result = result;
-          emit(run.id, 'homework-status', { index: hi, status: 'done' });
-        } catch (err) {
-          log(run.id, 'error', `Lỗi xử lý bài tập qua trình duyệt: ${err.message}`);
-          run.homeworks[hi].status = 'error';
-          run.homeworks[hi].result = { error: err.message };
-          emit(run.id, 'homework-status', { index: hi, status: 'error', error: err.message });
-        }
-      } else {
-        // HTTP engine fallback: fetch static page and submit form
-        let questions;
-        let html;
-        try {
-          html = await client.fetchHomeworkPage(hw.url);
-          questions = parseQuestions(html, { url: hw.url });
-          log(run.id, 'info', `Parsed ${questions.length} question(s)`);
-        } catch (err) {
-          log(run.id, 'error', `Could not read homework: ${err.message}`);
-          run.homeworks[hi].status = 'error';
-          run.homeworks[hi].result = { error: err.message };
-          emit(run.id, 'homework-status', { index: hi, status: 'error', error: err.message });
-          continue;
-        }
-
-        if (!questions.length) {
-          log(run.id, 'warn', 'Không tìm thấy câu hỏi (dạng bài tương tác OLM yêu cầu Browser engine)');
-          run.homeworks[hi].status = 'skipped';
-          emit(run.id, 'homework-status', { index: hi, status: 'skipped' });
-          continue;
-        }
-
-        const results = await answerEngine.solveAll(questions, {
-          onProgress: (i, total, q) => {
-            log(run.id, 'info', `Solving Q${i + 1}/${total}: ${String(q.text).slice(0, 70)}`);
-            emit(run.id, 'progress', { index: i, total, question: String(q.text).slice(0, 120) });
+    if (browser) {
+      try {
+        const result = await browserEngine.solveHomework(browser, {
+          homework: hw,
+          session,
+          config,
+          log: (lvl, msg) => log(run.id, lvl, msg, hw.id),
+          emit: (type, payload) => {
+            if (payload?.phase) hw.phase = payload.phase;
+            if (type === 'scan-complete') {
+              hw.progress.scanned = payload.total || 0;
+              hw.progress.total = payload.total || 0;
+            } else if (type === 'scan-progress') {
+              hw.progress.scanned = payload.completed || 0;
+              hw.progress.total = payload.total || 0;
+            } else if (type === 'solve-progress') {
+              hw.progress.solved = payload.completed || 0;
+              hw.progress.total = payload.total || hw.progress.total;
+            } else if (type === 'fill-progress') {
+              hw.progress.filled = payload.filled || 0;
+              hw.progress.failed = payload.failed || 0;
+              hw.progress.total = payload.total || hw.progress.total;
+            }
+            emit(run.id, type, { ...payload, index: hi, hwId: hw.id });
           },
         });
 
-        const plan = H.planWrongAnswers(questions, config.scoreTarget);
-        const chosen = [];
-        for (let qi = 0; qi < results.length; qi++) {
-          const res = results[qi];
-          const q = questions[qi];
-          let chosenIndex = res.correctIndex;
-          let chosenText = res.answer || '';
-          let isWrong = false;
-
-          if (res.ok && plan.wrongIndices.has(qi) && q.options.length > 1) {
-            chosenIndex = q.plannedWrong;
-            chosenText = q.options[chosenIndex];
-            isWrong = true;
-          } else if (!res.ok) {
-            if (q.options.length > 1) {
-              chosenIndex = Math.floor(Math.random() * q.options.length);
-              chosenText = q.options[chosenIndex];
-            }
-          }
-
-          chosen.push({
-            index: qi,
-            questionId: q.id,
-            correctIndex: res.correctIndex,
-            chosenIndex,
-            chosenText,
-            isWrong,
-            explanation: res.explanation || '',
-          });
-        }
-
-        const submitInfo = findSubmitInfo(html, hw.url);
-        const payload = buildSubmitPayload(chosen, questions, submitInfo);
-
-        const timing = H.resolveSubmitWindow(windowSpec);
-        const submitAt = timing.submitAt;
-        run.submitAt = submitAt;
-
-        await new Promise((resolve) => {
-          const waitMs = Math.max(0, submitAt.getTime() - Date.now());
-          if (waitMs === 0) return resolve();
-          log(run.id, 'info', `Nộp bài sau ${Math.round(waitMs / 1000)}s...`);
-          const t = setTimeout(resolve, waitMs);
-          if (t.unref) t.unref();
-        });
-
-        await rateGuard.waitForSlot();
-
-        try {
-          const res = await client.submitHomework(submitInfo.action, payload);
-          const ok = res.status >= 200 && res.status < 400;
-          log(run.id, ok ? 'success' : 'error', `Nộp bài hoàn tất (HTTP ${res.status})`);
-          run.homeworks[hi].status = ok ? 'done' : 'error';
-          run.homeworks[hi].result = { engine: 'http', status: res.status, action: submitInfo.action };
-          emit(run.id, 'homework-status', { index: hi, status: ok ? 'done' : 'error' });
-        } catch (err) {
-          log(run.id, 'error', `Submit failed: ${err.message}`);
-          run.homeworks[hi].status = 'error';
-          run.homeworks[hi].result = { error: err.message };
-          emit(run.id, 'homework-status', { index: hi, status: 'error', error: err.message });
-        }
+        hw.result = result;
+        hw.status = result.failed > 0 ? 'partial' : 'done';
+        hw.snapshot = (result.questions || []).map((q) => ({ id: q.id, index: q.index, type: q.type, text: q.text, status: q.status }));
+        log(run.id, 'success', `✔ Hoàn tất bài "${hw.title}" (Đã điền: ${result.filled}/${result.scanned} câu)`, hw.id);
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: hw.status, title: hw.title, result });
+      } catch (err) {
+        log(run.id, 'error', `✖ Lỗi bài "${hw.title}": ${err.message}`, hw.id);
+        hw.status = 'error';
+        hw.result = { error: err.message };
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'error', error: err.message });
+      }
+    } else {
+      // HTTP engine fallback
+      const client = OlmClient.fromSerialized(session.cookieJar, session.ua);
+      let questions;
+      let html;
+      try {
+        html = await client.fetchHomeworkPage(hw.url);
+        questions = parseQuestions(html, { url: hw.url });
+        log(run.id, 'info', `Tìm thấy ${questions.length} câu hỏi`, hw.id);
+      } catch (err) {
+        log(run.id, 'error', `Không thể đọc bài tập: ${err.message}`, hw.id);
+        hw.status = 'error';
+        hw.result = { error: err.message };
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'error', error: err.message });
+        return;
       }
 
-      // Rest briefly between homeworks (3-5s)
-      if (hi < run.homeworks.length - 1) {
-        const rest = H.randInt(3000, 5000);
-        log(run.id, 'info', `Nghỉ ${Math.round(rest / 1000)}s trước khi làm bài tiếp theo...`);
-        emit(run.id, 'resting', { ms: rest });
-        await new Promise((r) => setTimeout(r, rest));
+      if (!questions.length) {
+        log(run.id, 'warn', 'Không tìm thấy câu hỏi (dạng bài tương tác OLM yêu cầu Browser engine)', hw.id);
+        hw.status = 'skipped';
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'skipped' });
+        return;
+      }
+
+      const results = await answerEngine.solveAll(questions, {
+        onProgress: (i, total, q) => {
+          log(run.id, 'info', `Giải câu ${i + 1}/${total}: ${String(q.text).slice(0, 70)}`, hw.id);
+          emit(run.id, 'progress', { index: i, total, question: String(q.text).slice(0, 120), hwId: hw.id });
+        },
+      });
+
+      const plan = H.planWrongAnswers(questions, config.scoreTarget);
+      const chosen = [];
+      for (let qi = 0; qi < results.length; qi++) {
+        const res = results[qi];
+        const q = questions[qi];
+        let chosenIndex = res.correctIndex;
+        let chosenText = res.answer || '';
+        let isWrong = false;
+
+        if (res.ok && plan.wrongIndices.has(qi) && q.options.length > 1) {
+          chosenIndex = q.plannedWrong;
+          chosenText = q.options[chosenIndex];
+          isWrong = true;
+        } else if (!res.ok) {
+          if (q.options.length > 1) {
+            chosenIndex = Math.floor(Math.random() * q.options.length);
+            chosenText = q.options[chosenIndex];
+          }
+        }
+
+        chosen.push({
+          index: qi,
+          questionId: q.id,
+          correctIndex: res.correctIndex,
+          chosenIndex,
+          chosenText,
+          isWrong,
+          explanation: res.explanation || '',
+        });
+      }
+
+      const submitInfo = findSubmitInfo(html, hw.url);
+      const payload = buildSubmitPayload(chosen, questions, submitInfo);
+
+      const timing = H.resolveSubmitWindow(windowSpec);
+      const submitAt = timing.submitAt;
+      run.submitAt = submitAt;
+
+      await new Promise((resolve) => {
+        const waitMs = Math.max(0, submitAt.getTime() - Date.now());
+        if (waitMs === 0) return resolve();
+        log(run.id, 'info', `Nộp bài sau ${Math.round(waitMs / 1000)}s...`, hw.id);
+        const t = setTimeout(resolve, waitMs);
+        if (t.unref) t.unref();
+      });
+
+      await rateGuard.waitForSlot();
+
+      try {
+        const res = await client.submitHomework(submitInfo.action, payload);
+        const ok = res.status >= 200 && res.status < 400;
+        log(run.id, ok ? 'success' : 'error', `Nộp bài hoàn tất (HTTP ${res.status})`, hw.id);
+        hw.status = ok ? 'done' : 'error';
+        hw.result = { engine: 'http', status: res.status, action: submitInfo.action };
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: hw.status });
+      } catch (err) {
+        log(run.id, 'error', `Submit failed: ${err.message}`, hw.id);
+        hw.status = 'error';
+        hw.result = { error: err.message };
+        emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'error', error: err.message });
       }
     }
+  }
+
+  try {
+    const queue = Array.from({ length: run.homeworks.length }, (_, i) => i);
+    const workerCount = Math.min(concurrency, run.homeworks.length);
+    log(run.id, 'info', `🚀 Bắt đầu xử lý song song ${workerCount} bài cùng lúc...`);
+
+    async function worker(workerId) {
+      while (queue.length > 0) {
+        const hi = queue.shift();
+        if (hi === undefined) break;
+        await processHomework(hi);
+        if (queue.length > 0) {
+          const rest = H.randInt(1500, 3000);
+          await new Promise((r) => setTimeout(r, rest));
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, (_, wid) => worker(wid)));
   } finally {
     if (browser) await browser.close().catch(() => null);
   }
@@ -286,7 +336,8 @@ function listRuns() {
   return [...runs.values()]
     .map((r) => ({
       id: r.id,
-      status: r.status,
+      phase: r.phase,
+      progress: { ...r.progress },
       startedAt: r.startedAt,
       submitAt: r.submitAt,
       homeworks: r.homeworks.map((h) => ({ title: h.title, status: h.status })),

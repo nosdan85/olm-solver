@@ -57,6 +57,9 @@ app.get('/api/health', (req, res) => {
     engine: process.env.OLM_ENGINE || 'auto',
     browserAvailable: browserEngine.isAvailable(),
     openaiConfigured: answerEngine.hasKey(),
+    model: answerEngine.currentModel(),
+    provider: answerEngine.isOpenAiProvider() ? 'openai' : 'openai-compatible',
+    fallbacks: answerEngine.providers().slice(1).map((p) => p.model),
     uptime: Math.round(process.uptime()),
   });
 });
@@ -130,6 +133,9 @@ app.post('/api/run', requireSession, async (req, res) => {
   const cfg = {
     scoreTarget: config?.scoreTarget || 'high',
     submitWindow: config?.submitWindow || null,
+    submitDelayMinutes: Number(config?.submitDelayMinutes || 0),
+    aiBatchSize: Math.max(1, Math.min(12, Number(config?.aiBatchSize || process.env.AI_BATCH_SIZE || 6))),
+    concurrency: Math.max(1, Math.min(6, Number(config?.concurrency || process.env.RUN_CONCURRENCY || 2))),
     speed: config?.speed || 'normal',
     engine: config?.engine || process.env.OLM_ENGINE || 'auto',
   };
@@ -156,6 +162,8 @@ app.get('/api/run/:runId', (req, res) => {
     run: {
       id: run.id,
       status: run.status,
+      phase: run.phase,
+      progress: run.progress,
       startedAt: run.startedAt,
       submitAt: run.submitAt,
       homeworks: run.homeworks,
@@ -240,5 +248,11 @@ app.listen(PORT, HOST, () => {
   console.log(`\n  OLM solver backend`);
   console.log(`  listening   http://${HOST}:${PORT}`);
   console.log(`  browser     ${browserEngine.isAvailable() ? 'available' : 'not installed (HTTP engine only)'}`);
-  console.log(`  openai      ${answerEngine.hasKey() ? 'configured' : 'MISSING OPENAI_API_KEY'}\n`);
+  console.log(`  openai      ${answerEngine.hasKey() ? 'configured' : 'MISSING OPENAI_API_KEY'}`);
+  console.log(`  model       ${answerEngine.currentModel()} (${answerEngine.isOpenAiProvider() ? 'openai' : 'openai-compatible'})`);
+  const fallbacks = answerEngine.providers().slice(1);
+  if (fallbacks.length) {
+    console.log(`  fallbacks   ${fallbacks.map((p) => p.model).join(', ')}`);
+  }
+  console.log('');
 });

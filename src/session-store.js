@@ -77,8 +77,8 @@ function list() {
   }));
 }
 
-// Drop sessions idle for longer than the TTL so a dead cookie never lingers.
-const TTL_MS = 1000 * 60 * 60 * 12;
+// Keep sessions persistent (365 days) so user stays logged in until manual logout
+const TTL_MS = 1000 * 60 * 60 * 24 * 365;
 function sweep() {
   const now = Date.now();
   let removed = 0;

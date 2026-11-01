@@ -40,8 +40,35 @@ npm install
 Copy `.env.example` thành `.env`, rồi điền:
 
 ```env
-OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_API_KEY=your-gemini-key
+OPENAI_MODEL=gemini-3.8-flash
 ```
+
+Endpoint này là OpenAI-compatible, nên có thể đổi sang provider khác (OpenAI, Groq, OpenRouter, opencode zen...) bằng cách sửa `OPENAI_BASE_URL` và `OPENAI_MODEL`.
+
+**Provider dự phòng** — app tự chuyển sang provider thứ hai khi provider chính lỗi (hết quota, sai key, model không có):
+
+```env
+FALLBACK_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+FALLBACK_MODELS=gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite
+FALLBACK_API_KEY=your-gemini-key
+```
+
+`FALLBACK_MODELS` nhận nhiều model cách nhau bằng dấu phẩy, app sẽ thử lần lượt. Điều này quan trọng với Gemini free tier: **mỗi model có hạn mức riêng 20 req/ngày**, nên khai báo nhiều model giúp chạy được nhiều bài hơn trước khi hết quota.
+
+**Một số endpoint dùng `x-api-key` thay vì `Authorization: Bearer`** (ví dụ opencode zen) — khi đó thêm `OPENAI_AUTH_HEADER=x-api-key`.
+
+**Model GPT-5/6** (OpenAI, opencode zen) dùng `reasoning_effort` và `max_completion_tokens` thay cho `temperature`:
+
+```env
+OPENAI_REASONING_EFFORT=none   # none | minimal | low | medium | high | xhigh | max
+OPENAI_MAX_TOKENS=2048
+```
+
+**Model Claude** (opencode zen) dùng `effort` và `max_tokens`, **không** nhận `temperature` cũng không nhận `response_format`. Mức `effort` hợp lệ: `low | medium | high | xhigh | max` — không có `none`. Engine tự chọn đúng payload dựa trên tên model.
+
+> **Lưu ý quota Gemini free tier**: `gemini-3.8-flash` chỉ cho **20 request/ngày** ở tầng miễn phí. Hết quota sẽ trả về HTTP 429 và backend báo đúng thông báo lỗi của Google. Nâng cấp billing trong Google AI Studio, hoặc đổi sang `gemini-3.5-flash` / `gemini-3.1-flash-lite` (hạn mức cao hơn) nếu cần chạy nhiều bài. Kiểm tra quota bằng `npm run quota`.
 
 Khởi động:
 

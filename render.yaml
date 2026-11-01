@@ -7,10 +7,12 @@ services:
     branch: main
     autoDeploy: true
     envVars:
-      - key: GEMINI_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
-      - key: GEMINI_MODEL
-        value: gemini-flash-lite-latest
+      - key: OPENAI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai
+      - key: OPENAI_MODEL
+        value: gemini-3.8-flash
       - key: PUPPETEER_HEADLESS
         value: "true"
       - key: SESSION_SECRET

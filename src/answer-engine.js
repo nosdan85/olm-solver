@@ -53,7 +53,7 @@ function callAi(payload) {
   });
 }
 
-// Ask the model to solve one question.
+// Ask the model to solve one question (supports Vision screenshot, True/False, Short Answer, Choice).
 async function solveQuestion(question, { retries = 2 } = {}) {
   if (!hasKey()) {
     const err = new Error('OPENAI_API_KEY is not set on the server');
@@ -64,13 +64,27 @@ async function solveQuestion(question, { retries = 2 } = {}) {
   const prompt = buildPrompt(question);
   let lastErr;
 
+  // Build message content (text or multimodal with image_url)
+  let userMessageContent = prompt;
+  if (question.imageBase64) {
+    userMessageContent = [
+      { type: 'text', text: prompt },
+      {
+        type: 'image_url',
+        image_url: {
+          url: `data:image/jpeg;base64,${question.imageBase64}`,
+        },
+      },
+    ];
+  }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await callAi({
         model: process.env.OPENAI_MODEL || 'gemini-flash-lite-latest',
         temperature: 0.1,
         messages: [
-          { role: 'user', content: prompt },
+          { role: 'user', content: userMessageContent },
         ],
       });
 
@@ -80,6 +94,25 @@ async function solveQuestion(question, { retries = 2 } = {}) {
       const parsed = parseModelJson(content);
       const options = question.options || [];
       let correctIndex = -1;
+
+      if (question.type === 'true_false' || Array.isArray(question.statements)) {
+        // Parse array of booleans for True/False statements
+        let statements = [];
+        if (Array.isArray(parsed.statements)) {
+          statements = parsed.statements.map(s => {
+            if (typeof s === 'boolean') return s;
+            if (typeof s === 'object' && s !== null) return Boolean(s.isTrue ?? s.answer ?? true);
+            return String(s).toLowerCase().startsWith('đ') || String(s).toLowerCase().startsWith('t');
+          });
+        }
+        return {
+          statements,
+          answer: parsed.answer || '',
+          explanation: parsed.explanation || '',
+          kind: 'true_false',
+          raw: content,
+        };
+      }
 
       if (options.length > 0) {
         correctIndex = normalizeIndex(parsed.correctIndex ?? parsed.index ?? parsed.answer, options.length);
@@ -95,7 +128,7 @@ async function solveQuestion(question, { retries = 2 } = {}) {
         correctIndex,
         answer: parsed.answer ?? (correctIndex >= 0 ? options[correctIndex] : ''),
         explanation: parsed.explanation || '',
-        kind: options.length > 0 ? 'choice' : 'text',
+        kind: options.length > 0 ? 'choice' : (question.type || 'text'),
         raw: content,
       };
     } catch (err) {
@@ -113,22 +146,38 @@ async function solveQuestion(question, { retries = 2 } = {}) {
 function buildPrompt(question) {
   const options = question.options || [];
   const lines = [];
-  lines.push(`Môn: ${question.subject || 'không rõ'}`);
-  lines.push(`Câu hỏi: ${question.text}`);
-  if (options.length > 0) {
-    lines.push('Các đáp án:');
-    options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+  lines.push(`Môn học: ${question.subject || 'Toán/Lý/Hóa/Sinh/Sử/Địa/Văn'}`);
+  lines.push(`Câu hỏi: ${question.text || '(Xem nội dung trong hình ảnh chụp màn hình kèm theo)'}`);
+
+  if (question.imageBase64) {
+    lines.push('(Lưu ý: Câu hỏi hoặc sơ đồ/công thức được đính kèm trong ảnh chụp màn hình, hãy quan sát kỹ ảnh để giải).');
   }
-  lines.push('');
+
+  if (question.type === 'true_false' || (question.statements && question.statements.length > 0)) {
+    lines.push('\nĐây là dạng câu hỏi Đúng/Sai với các mệnh đề:');
+    (question.statements || []).forEach((st, i) => {
+      lines.push(`  [${String.fromCharCode(97 + i)}] ${st}`);
+    });
+    lines.push('\nHãy xác định từng mệnh đề là Đúng (true) hay Sai (false).');
+    lines.push('Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"statements": [true, false, true, false], "explanation": "<giải thích ngắn>"}');
+    return lines.join('\n');
+  }
+
   if (options.length > 0) {
+    lines.push('\nCác lựa chọn đáp án:');
+    options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+    lines.push('');
     lines.push(
-      'Trả về JSON dạng: ' +
-        '{"correctIndex": <số thứ tự của đáp án đúng, 0-based>, "answer": "<ngắn gọn>", "explanation": "<giải thích ngắn>"}'
+      'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
+        '{"correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<ngắn gọn>", "explanation": "<giải thích ngắn>"}'
     );
   } else {
+    lines.push('');
     lines.push(
-      'Trả về JSON dạng: ' +
-        '{"answer": "<lời giải/đáp án tự luận ngắn gọn>", "explanation": "<giải thích ngắn>"}'
+      'Đây là câu hỏi trả lời ngắn/tự luận/điền số. ' +
+      'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
+        '{"answer": "<con số hoặc đáp án ngắn gọn nhất>", "explanation": "<giải thích ngắn>"}'
     );
   }
   return lines.join('\n');

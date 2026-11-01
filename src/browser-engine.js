@@ -186,16 +186,143 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         }, qi);
         await H.sleep(H.randInt(800, 1500));
 
-        // Read question data from shadowRoot
+        // Check if question has images/diagrams/canvas
+        const hasImage = await page.evaluate(() => {
+          const root = document.querySelector('default-root')?.shadowRoot;
+          if (root) {
+            const imgs = root.querySelectorAll('img, svg, canvas');
+            if (imgs.length > 0) return true;
+          }
+          return !!document.querySelector('.question-content img, .question img, svg, canvas');
+        });
+
+        let imageBase64 = null;
+        if (hasImage) {
+          if (log) log('info', `Câu ${qi + 1}: Phát hiện có hình ảnh/sơ đồ, chụp màn hình gửi AI Vision...`);
+          try {
+            imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 });
+          } catch (e) {
+            // fallback
+          }
+        }
+
+        // --- DẠNG 1: ĐÚNG / SAI (type-true-fasle) ---
+        const tfData = await page.evaluate(() => {
+          const root = document.querySelector('default-root')?.shadowRoot;
+          const tf = root?.querySelector('type-true-fasle')?.shadowRoot;
+          if (!tf) return null;
+          const contentEl = tf.querySelector('.question-content');
+          const text = (contentEl?.innerText || '').trim();
+          const rows = Array.from(tf.querySelectorAll('.tf-row')).map((r, i) => {
+            return {
+              index: i,
+              text: r.innerText.replace(/[ĐS\s]+$/, '').trim(),
+            };
+          });
+          return { text, rows };
+        });
+
+        if (tfData && tfData.rows.length > 0) {
+          if (log) log('info', `Giải câu ${qi + 1}/${questionCount} [Đúng/Sai]: ${tfData.text.slice(0, 50)}...`);
+          try {
+            const solved = await answerEngine.solveQuestion({
+              id: `q_${qi + 1}`,
+              type: 'true_false',
+              text: tfData.text,
+              statements: tfData.rows.map((r) => r.text),
+              imageBase64,
+              subject: homework.subject,
+            });
+
+            const answers = solved.statements && solved.statements.length > 0 ? solved.statements : [true, false, true, false];
+            if (log) log('info', `Câu ${qi + 1}: AI chọn Đúng/Sai -> [${answers.map((a) => (a ? 'Đ' : 'S')).join(', ')}]`);
+
+            await page.evaluate((ansList) => {
+              const root = document.querySelector('default-root')?.shadowRoot;
+              const tf = root?.querySelector('type-true-fasle')?.shadowRoot;
+              if (!tf) return;
+              const rows = Array.from(tf.querySelectorAll('.tf-row'));
+              rows.forEach((row, idx) => {
+                const targetTrue = ansList[idx] ?? true;
+                const buttons = Array.from(row.querySelectorAll('td, span, div, button'));
+                const btn = buttons.find((el) => {
+                  const t = el.innerText?.trim();
+                  return targetTrue ? t === 'Đ' : t === 'S';
+                });
+                if (btn) btn.click();
+              });
+            }, answers);
+
+            await H.sleep(H.randInt(500, 1000));
+            await page.evaluate(() => {
+              const btn = document.getElementById('btn-done');
+              if (btn && !btn.disabled) btn.click();
+            });
+            answeredCount++;
+            await H.sleep(H.randInt(1200, 2000));
+            continue;
+          } catch (err) {
+            if (log) log('warn', `Câu ${qi + 1} [Đúng/Sai]: AI lỗi (${err.message})`);
+          }
+        }
+
+        // --- DẠNG 2: TRẢ LỜI NGẮN / TỰ LUẬN (textarea.typing-para) ---
+        const shortAnsData = await page.evaluate(() => {
+          const root = document.querySelector('default-root')?.shadowRoot;
+          const inputEl = root?.querySelector('input[type="text"], textarea') || document.querySelector('textarea.typing-para, .text-para, textarea');
+          if (!inputEl) return null;
+          const contentEl = root?.querySelector('.question-content') || document.querySelector('.question-content, .question');
+          return {
+            text: (contentEl?.innerText || '').trim(),
+          };
+        });
+
+        if (shortAnsData && shortAnsData.text) {
+          if (log) log('info', `Giải câu ${qi + 1}/${questionCount} [Trả lời ngắn]: ${shortAnsData.text.slice(0, 50)}...`);
+          try {
+            const solved = await answerEngine.solveQuestion({
+              id: `q_${qi + 1}`,
+              type: 'short_answer',
+              text: shortAnsData.text,
+              imageBase64,
+              subject: homework.subject,
+            });
+            const ansText = solved.answer || '';
+            if (log) log('info', `Câu ${qi + 1}: AI điền đáp án -> "${ansText}"`);
+
+            await page.evaluate((text) => {
+              const root = document.querySelector('default-root')?.shadowRoot;
+              const inputEl = root?.querySelector('input[type="text"], textarea') || document.querySelector('textarea.typing-para, .text-para, textarea');
+              if (inputEl) {
+                inputEl.value = text;
+                inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }, ansText);
+
+            await H.sleep(H.randInt(500, 1000));
+            await page.evaluate(() => {
+              const btn = document.getElementById('btn-done');
+              if (btn && !btn.disabled) btn.click();
+            });
+            answeredCount++;
+            await H.sleep(H.randInt(1200, 2000));
+            continue;
+          } catch (err) {
+            if (log) log('warn', `Câu ${qi + 1} [Trả lời ngắn]: AI lỗi (${err.message})`);
+          }
+        }
+
+        // --- DẠNG 3: TRẮC NGHIỆM ĐƠN / NHIỀU LỰA CHỌN (type-quiz-x) ---
         const qData = await page.evaluate(() => {
           const root = document.querySelector('default-root')?.shadowRoot;
-          const quizX = root?.querySelector('type-quiz-x')?.shadowRoot;
+          const quizX = root?.querySelector('type-quiz-x, type-quiz-multi')?.shadowRoot || root;
           if (!quizX) return null;
 
           const contentEl = quizX.querySelector('.question-content');
           const text = (contentEl?.innerText || '').trim();
 
-          const optionEls = Array.from(quizX.querySelectorAll('.qselect'));
+          const optionEls = Array.from(quizX.querySelectorAll('.qselect, .choice-item, .option'));
           const options = optionEls
             .map((el, i) => ({
               index: i,
@@ -206,12 +333,12 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
           return { text, options };
         });
 
-        if (!qData || !qData.text || !qData.options.length) {
+        if (!qData || (!qData.text && !imageBase64) || !qData.options.length) {
           if (log) log('warn', `Câu ${qi + 1}: Không tìm thấy nội dung câu hỏi, chuyển câu tiếp theo...`);
           continue;
         }
 
-        if (log) log('info', `Giải câu ${qi + 1}/${questionCount}: ${qData.text.slice(0, 60)}...`);
+        if (log) log('info', `Giải câu ${qi + 1}/${questionCount}: ${(qData.text || 'Hình ảnh').slice(0, 60)}...`);
 
         // Ask AI for the answer
         let chosenIdx = 0;
@@ -221,6 +348,8 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
             id: `q_${qi + 1}`,
             text: qData.text,
             options: qData.options.map((o) => o.text),
+            imageBase64,
+            subject: homework.subject,
           });
           chosenIdx = solved.correctIndex >= 0 ? solved.correctIndex : 0;
           chosenText = solved.answer || qData.options[chosenIdx]?.text || '';
@@ -246,9 +375,9 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         await page.evaluate(
           (targetIdx, targetText) => {
             const root = document.querySelector('default-root')?.shadowRoot;
-            const quizX = root?.querySelector('type-quiz-x')?.shadowRoot;
+            const quizX = root?.querySelector('type-quiz-x, type-quiz-multi')?.shadowRoot || root;
             if (!quizX) return false;
-            const optionEls = Array.from(quizX.querySelectorAll('.qselect'));
+            const optionEls = Array.from(quizX.querySelectorAll('.qselect, .choice-item, .option'));
             let chosen = null;
             if (typeof targetIdx === 'number' && targetIdx >= 0 && targetIdx < optionEls.length) {
               chosen = optionEls[targetIdx];

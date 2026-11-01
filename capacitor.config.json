@@ -1,0 +1,16 @@
+{
+  "appId": "com.olmassistant.app",
+  "appName": "OLM Solver",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "server": {
+    "iosScheme": "capacitor",
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true
+  }
+}

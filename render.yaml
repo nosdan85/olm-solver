@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: olm-solver-backend
+    env: docker
+    plan: free
+    region: singapore
+    branch: main
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-lite-latest
+      - key: PUPPETEER_HEADLESS
+        value: "true"
+      - key: SESSION_SECRET
+        generateValue: true

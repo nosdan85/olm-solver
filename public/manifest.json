@@ -1,0 +1,16 @@
+{
+  "name": "OLM Homework Assistant",
+  "short_name": "OLM",
+  "description": "Quản lý và làm bài tập OLM",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0b0d12",
+  "background_color": "#0b0d12",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icons/icon.svg", "sizes": "192x192 512x512", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

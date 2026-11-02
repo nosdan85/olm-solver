@@ -439,9 +439,13 @@
   </div>
 
   <script>
-    const API_BASE = (window.location.origin.includes('localhost:3000') || window.location.origin.includes('onrender.com'))
-      ? ''
-      : 'https://olm-solver.onrender.com';
+    const isLocalOrTunnel = window.location.origin.includes('localhost') ||
+                            window.location.origin.includes('127.0.0.1') ||
+                            window.location.origin.includes('192.168.') ||
+                            window.location.origin.includes('10.') ||
+                            window.location.origin.includes('trycloudflare.com') ||
+                            window.location.origin.includes('loca.lt');
+    const API_BASE = isLocalOrTunnel ? '' : (localStorage.getItem('olm.serverUrl') || 'https://olm-solver.onrender.com');
     let currentLicenses = [];
 
     function getAdminToken() {

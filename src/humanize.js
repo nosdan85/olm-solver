@@ -165,42 +165,90 @@ function wrongRatioForScore(scoreTarget) {
   }
 }
 
-// Pick which questions to answer incorrectly and how.
+// Pick which questions to answer incorrectly and how to hit the EXACT target score.
 function planWrongAnswers(questions, scoreTarget) {
-  const ratio = wrongRatioForScore(scoreTarget);
   const total = questions.length;
-  let wrongCount = Math.round(total * ratio);
-  if (wrongCount <= 0) return { wrongIndices: new Set(), ratio };
+  if (!total) return { wrongIndices: new Set(), plannedWrongs: new Map(), ratio: 0 };
 
-  // Do not fail the whole homework — cap at 60% of the questions.
-  wrongCount = Math.min(wrongCount, Math.max(0, Math.floor(total * 0.6)));
-  if (wrongCount === 0) return { wrongIndices: new Set(), ratio };
+  const targetStr = String(scoreTarget || '10').trim().toLowerCase();
+  let target = 10;
+  if (targetStr === 'max' || targetStr === '10') target = 10;
+  else if (targetStr === 'high' || targetStr === '9') target = 9;
+  else if (targetStr === 'mid' || targetStr === '8') target = 8;
+  else if (targetStr === '7') target = 7;
+  else if (targetStr === 'low' || targetStr === '5') target = 5;
+  else if (/^\d+(\.\d+)?$/.test(targetStr)) target = Math.min(10, Math.max(0, Number(targetStr)));
 
-  const indices = questions.map((_, i) => i);
-  // Fisher-Yates so the wrong questions are scattered, not a block.
-  for (let i = indices.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [indices[i], indices[j]] = [indices[j], indices[i]];
+  if (target >= 10) {
+    return { wrongIndices: new Set(), plannedWrongs: new Map(), ratio: 0 };
   }
 
-  const wrongIndices = new Set();
-  for (let i = 0; i < wrongCount; i++) {
-    const idx = indices[i];
-    const q = questions[idx];
-    const options = q.options || [];
-    const correctIdx = typeof q.correctIndex === 'number' ? q.correctIndex : -1;
-    // For multiple choice we must deviate from the known-correct option.
-    // For open questions we just write a weaker answer.
-    let chosen = correctIdx;
-    if (options.length > 1 && correctIdx >= 0) {
-      const others = options.map((_, i) => i).filter((i) => i !== correctIdx);
-      chosen = pick(others);
+  // Exact number of questions that should be correct to achieve target score:
+  // e.g. For 60 questions, target 8 -> desiredCorrect = 48, targetWrongCount = 12
+  const desiredCorrect = Math.max(0, Math.min(total, Math.round(total * (target / 10))));
+  const targetWrongCount = total - desiredCorrect;
+
+  if (targetWrongCount <= 0) {
+    return { wrongIndices: new Set(), plannedWrongs: new Map(), ratio: 0 };
+  }
+
+  // Find candidate questions: prioritize multiple-choice questions with >= 2 options
+  const mcIndices = [];
+  const otherIndices = [];
+  for (let i = 0; i < total; i++) {
+    const q = questions[i];
+    if (Array.isArray(q.options) && q.options.length > 1) {
+      mcIndices.push(i);
+    } else {
+      otherIndices.push(i);
     }
-    wrongIndices.add(idx);
-    questions[idx].plannedWrong = chosen;
   }
 
-  return { wrongIndices, ratio };
+  // Shuffle multiple choice indices (Fisher-Yates)
+  for (let i = mcIndices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [mcIndices[i], mcIndices[j]] = [mcIndices[j], mcIndices[i]];
+  }
+  // Shuffle other indices
+  for (let i = otherIndices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [otherIndices[i], otherIndices[j]] = [otherIndices[j], otherIndices[i]];
+  }
+
+  const selectedIndices = [...mcIndices, ...otherIndices].slice(0, targetWrongCount);
+  const wrongIndices = new Set();
+  const plannedWrongs = new Map();
+
+  for (const idx of selectedIndices) {
+    const q = questions[idx];
+    wrongIndices.add(idx);
+
+    if (Array.isArray(q.options) && q.options.length > 1) {
+      const correctIdx = typeof q.correctIndex === 'number' && q.correctIndex >= 0 ? q.correctIndex : 0;
+      // Guarantee picking a wrong option
+      const wrongIdx = (correctIdx + 1) % q.options.length;
+      q.plannedWrong = wrongIdx;
+      plannedWrongs.set(idx, {
+        correctIndex: wrongIdx,
+        answer: q.options[wrongIdx]
+      });
+    } else if (q.type === 'true_false' || Array.isArray(q.statements)) {
+      const statements = Array.isArray(q.statements) ? [...q.statements] : [true];
+      statements[0] = !statements[0];
+      plannedWrongs.set(idx, {
+        correctIndex: -1,
+        statements
+      });
+    } else {
+      // Short answer / essay
+      plannedWrongs.set(idx, {
+        correctIndex: -1,
+        answer: 'Không có thông tin'
+      });
+    }
+  }
+
+  return { wrongIndices, plannedWrongs, ratio: targetWrongCount / total };
 }
 
 // Rate guard: at most one homework submission every 10 minutes.

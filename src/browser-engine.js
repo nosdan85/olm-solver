@@ -404,7 +404,13 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
   const plannedQuestions = questions.map((q) => ({ ...q, correctIndex: answers.get(q.id)?.correctIndex ?? -1 }));
   const plan = H.planWrongAnswers(plannedQuestions, config.scoreTarget);
   emit?.('phase', { phase: 'filling', total: questions.length });
-  if (log) log('info', `✍ Bắt đầu điền đáp án vào trang OLM (${questions.length} câu)...`);
+
+  const targetScoreStr = config.scoreTarget || '10';
+  const wrongCount = plan.wrongIndices.size;
+  const correctCount = questions.length - wrongCount;
+  if (log) {
+    log('info', `✍ Bắt đầu điền đáp án (${questions.length} câu, mục tiêu: ${targetScoreStr}đ -> đúng ${correctCount} câu, sai ${wrongCount} câu)...`);
+  }
 
   let filled = 0;
   let failed = 0;
@@ -416,10 +422,15 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
       questionStatuses.set(question.id, 'unresolved');
       continue;
     }
-    const plannedWrongIndex = plannedQuestions[question.index]?.plannedWrong;
-    const planned = plan.wrongIndices.has(question.index) && question.options.length > 1 && plannedWrongIndex >= 0
-      ? { ...answer, correctIndex: plannedWrongIndex, answer: question.options[plannedWrongIndex] }
-      : answer;
+
+    let planned = answer;
+    if (plan.wrongIndices.has(question.index)) {
+      const wrongData = plan.plannedWrongs?.get(question.index);
+      if (wrongData) {
+        planned = { ...answer, ...wrongData };
+      }
+    }
+
     await page.evaluate((i) => {
       const chips = document.querySelectorAll('.tw-olm-chip-question');
       if (chips[i] && !chips[i].classList.contains('tw-selected')) chips[i].click();

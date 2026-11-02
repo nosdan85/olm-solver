@@ -214,7 +214,12 @@ async function executeRun(run, session, config) {
         },
       });
 
-      const plan = H.planWrongAnswers(questions, config.scoreTarget);
+      const planQuestions = questions.map((q, i) => ({
+        ...q,
+        index: i,
+        correctIndex: results[i]?.correctIndex ?? -1
+      }));
+      const plan = H.planWrongAnswers(planQuestions, config.scoreTarget);
       const chosen = [];
       for (let qi = 0; qi < results.length; qi++) {
         const res = results[qi];
@@ -223,10 +228,13 @@ async function executeRun(run, session, config) {
         let chosenText = res.answer || '';
         let isWrong = false;
 
-        if (res.ok && plan.wrongIndices.has(qi) && q.options.length > 1) {
-          chosenIndex = q.plannedWrong;
-          chosenText = q.options[chosenIndex];
-          isWrong = true;
+        if (res.ok && plan.wrongIndices.has(qi)) {
+          const wrong = plan.plannedWrongs?.get(qi);
+          if (wrong) {
+            chosenIndex = wrong.correctIndex;
+            chosenText = wrong.answer || '';
+            isWrong = true;
+          }
         } else if (!res.ok) {
           if (q.options.length > 1) {
             chosenIndex = Math.floor(Math.random() * q.options.length);

@@ -322,6 +322,22 @@
 
     <!-- Main Dashboard -->
     <div id="view-dashboard" style="display: none;">
+      <!-- Local Server & Mobile Tunnel Connection Box -->
+      <div class="card" style="border: 1px solid rgba(59, 130, 246, 0.4); background: linear-gradient(135deg, rgba(30, 58, 138, 0.25) 0%, rgba(15, 23, 42, 0.5) 100%);">
+        <div class="card-title" style="color: #60a5fa; margin-bottom: 8px;">
+          <span>🌐 Trạng Thái Máy Chủ Local & Đường Dẫn Cho Điện Thoại (4G / 5G)</span>
+          <span class="badge" style="background: #10b981; color: #fff; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;">CHẠY LOCAL 100% TRÊN MÁY TÍNH</span>
+        </div>
+        <p style="font-size: 13px; color: #cbd5e1; line-height: 1.5; margin-bottom: 12px;">
+          Phần mềm đang chạy trực tiếp trên máy tính của bạn với tốc độ cao nhất. Mọi thiết bị điện thoại (iPhone qua file IPA hoặc trình duyệt trên mạng 4G, 5G hoặc ngoài Wi-Fi) kết nối qua đường dẫn bên dưới:
+        </p>
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <input type="text" id="admin-tunnel-url" readonly value="https://gsm-parking-wherever-super.trycloudflare.com" style="flex: 1; min-width: 280px; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: #60a5fa; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); padding: 10px 14px; border-radius: 8px;">
+          <button type="button" class="btn btn-primary" onclick="copyAdminTunnel()">📋 Sao chép Link</button>
+          <a id="admin-tunnel-link" href="https://gsm-parking-wherever-super.trycloudflare.com" target="_blank" class="btn btn-secondary">🚀 Mở trên Web</a>
+        </div>
+      </div>
+
       <!-- Stats -->
       <div class="dashboard-grid">
         <div class="stat-card">
@@ -445,11 +461,32 @@
                             window.location.origin.includes('10.') ||
                             window.location.origin.includes('trycloudflare.com') ||
                             window.location.origin.includes('loca.lt');
-    const API_BASE = isLocalOrTunnel ? '' : (localStorage.getItem('olm.serverUrl') || 'https://olm-solver.onrender.com');
+    const API_BASE = isLocalOrTunnel ? '' : (localStorage.getItem('olm.serverUrl') || 'https://gsm-parking-wherever-super.trycloudflare.com');
     let currentLicenses = [];
 
     function getAdminToken() {
       return sessionStorage.getItem('olm_admin_token') || '';
+    }
+
+    async function loadAdminTunnel() {
+      try {
+        const res = await fetch(`${API_BASE}/api/tunnel`);
+        const data = await res.json();
+        if (data && data.url) {
+          const inp = document.getElementById('admin-tunnel-url');
+          const lnk = document.getElementById('admin-tunnel-link');
+          if (inp) inp.value = data.url;
+          if (lnk) lnk.href = data.url;
+        }
+      } catch {}
+    }
+
+    function copyAdminTunnel() {
+      const inp = document.getElementById('admin-tunnel-url');
+      if (inp) {
+        navigator.clipboard.writeText(inp.value.trim());
+        alert('Đã sao chép link kết nối điện thoại: ' + inp.value.trim());
+      }
     }
 
     function checkAuth() {
@@ -460,6 +497,7 @@
         document.getElementById('btn-logout').style.display = 'inline-flex';
         loadLicenses();
         loadProxy();
+        loadAdminTunnel();
       } else {
         document.getElementById('view-login').style.display = 'block';
         document.getElementById('view-dashboard').style.display = 'none';

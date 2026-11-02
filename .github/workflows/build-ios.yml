@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -28,6 +31,7 @@ jobs:
         run: |
           cd ios/App
           xcodebuild -list
+          xcodebuild -project App.xcodeproj -scheme App -resolvePackageDependencies
           xcodebuild -project App.xcodeproj \
             -scheme App \
             -configuration Release \
@@ -53,7 +57,7 @@ jobs:
           fi
           echo "Found app at: $APP_PATH"
           cp -r "$APP_PATH" Payload/
-          zip -r OLM-Solver.ipa Payload
+          zip -r -q OLM-Solver.ipa Payload
 
       - name: Upload iOS IPA Artifact
         uses: actions/upload-artifact@v4
@@ -61,3 +65,21 @@ jobs:
           name: OLM-Solver-iOS-IPA
           path: ios/App/OLM-Solver.ipa
           retention-days: 30
+
+      - name: Create or Update GitHub Release with IPA
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-ios
+          name: "OLM Solver iOS (IPA) - Local PC Edition"
+          body: |
+            ### 📱 Cài đặt OLM Solver trên iPhone / iPad (.ipa)
+            - **Phiên bản:** Local 100% PC Server Edition
+            - **Mạng hỗ trợ:** Bất kỳ mạng nào (4G, 5G, Wi-Fi ngoài) kết nối trực tiếp về PC qua Cloudflare Tunnel.
+            - **Cách cài đặt:**
+              1. Tải file `OLM-Solver.ipa` bên dưới.
+              2. Cài qua **AltStore**, **Sideloadly**, **TrollStore**, hoặc **Scarlet**.
+              3. Mở app trên iPhone, app sẽ tự kết nối tới server PC của bạn.
+          files: ios/App/OLM-Solver.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

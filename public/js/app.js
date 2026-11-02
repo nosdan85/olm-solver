@@ -33,6 +33,7 @@
     bindSettings();
     bindNotifications();
     bindLicense();
+    bindServerConfigModal();
     registerSW();
     connectEvents();
     startAutoScan();
@@ -861,10 +862,12 @@
 
     const cloudBtn = $('#btn-use-cloud-server');
     if (cloudBtn && serverInput) {
+      cloudBtn.textContent = '⚡ Dùng Đường Link Cloudflare Tunnel';
       cloudBtn.addEventListener('click', () => {
-        serverInput.value = Api.DEFAULT_CLOUD_URL;
-        Api.setServerUrl(Api.DEFAULT_CLOUD_URL);
-        toast('Đã chọn máy chủ Cloud mặc định (Render)!', 'ok');
+        serverInput.value = Api.DEFAULT_TUNNEL_URL;
+        Api.setServerUrl(Api.DEFAULT_TUNNEL_URL);
+        toast('Đã chọn máy chủ Cloudflare Tunnel!', 'ok');
+        updateAllServerDisplays();
         connectEvents();
       });
     }
@@ -908,6 +911,128 @@
     }
 
     loadTunnelUrl();
+  }
+
+  function updateAllServerDisplays() {
+    const sUrl = Api.getServerUrl();
+    const loginLbl = $('#login-server-label');
+    if (loginLbl) {
+      if (sUrl) {
+        loginLbl.textContent = sUrl.replace(/^https?:\/\//, '');
+        loginLbl.title = sUrl;
+      } else {
+        loginLbl.textContent = 'Máy tính (Local)';
+      }
+    }
+    const inServer = $('#in-server-url');
+    if (inServer) inServer.value = sUrl;
+    const inModal = $('#in-modal-server');
+    if (inModal) inModal.value = sUrl;
+  }
+
+  function bindServerConfigModal() {
+    const modal = $('#modal-server-config');
+    const inModal = $('#in-modal-server');
+    const statusBox = $('#modal-server-status');
+    const btnOpenFromLogin = $('#btn-open-server-config');
+    const btnOpenFromLic = $('#btn-license-server-config');
+    const btnClose = $('#btn-close-server-modal');
+    const btnSave = $('#btn-modal-save-server');
+    const btnTest = $('#btn-modal-test-server');
+    const btnPresetTunnel = $('#btn-preset-tunnel');
+    const btnPresetLan = $('#btn-preset-lan');
+    const connLabel = $('#conn-label');
+    const connDot = $('#conn-dot');
+
+    function openModal() {
+      if (inModal) inModal.value = Api.getServerUrl();
+      if (statusBox) statusBox.style.display = 'none';
+      if (modal) modal.style.display = 'flex';
+    }
+
+    function closeModal() {
+      if (modal) modal.style.display = 'none';
+    }
+
+    if (btnOpenFromLogin) btnOpenFromLogin.addEventListener('click', openModal);
+    if (btnOpenFromLic) btnOpenFromLic.addEventListener('click', openModal);
+    if (connLabel) {
+      connLabel.style.cursor = 'pointer';
+      connLabel.addEventListener('click', openModal);
+    }
+    if (connDot) {
+      connDot.style.cursor = 'pointer';
+      connDot.addEventListener('click', openModal);
+    }
+    if (btnClose) btnClose.addEventListener('click', closeModal);
+
+    if (btnTest) {
+      btnTest.addEventListener('click', async () => {
+        const url = (inModal?.value || '').trim().replace(/\/+$/, '');
+        if (statusBox) {
+          statusBox.textContent = 'Đang kiểm tra kết nối tới ' + (url || 'máy chủ local') + '...';
+          statusBox.className = 'alert alert-info';
+          statusBox.style.display = 'block';
+        }
+        btnTest.disabled = true;
+        const startTime = Date.now();
+        try {
+          const testEndpoint = url ? `${url}/api/health` : '/api/health';
+          const ctrl = new AbortController();
+          const tId = setTimeout(() => ctrl.abort(), 6000);
+          const res = await fetch(testEndpoint, { signal: ctrl.signal });
+          clearTimeout(tId);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          const ping = Date.now() - startTime;
+          if (statusBox) {
+            statusBox.textContent = `✔ Kết nối thành công (${ping}ms)! Engine: ${data.engine || 'Auto'} | Tunnel: ${data.tunnelUrl ? 'Sẵn sàng' : 'Local'}`;
+            statusBox.className = 'alert alert-success';
+            statusBox.style.display = 'block';
+          }
+        } catch (err) {
+          if (statusBox) {
+            statusBox.textContent = `✕ Không kết nối được: ${err.message}. Kiểm tra xem máy tính đã bật server chưa.`;
+            statusBox.className = 'alert alert-error';
+            statusBox.style.display = 'block';
+          }
+        } finally {
+          btnTest.disabled = false;
+        }
+      });
+    }
+
+    if (btnSave) {
+      btnSave.addEventListener('click', async () => {
+        const url = (inModal?.value || '').trim().replace(/\/+$/, '');
+        Api.setServerUrl(url);
+        updateAllServerDisplays();
+        toast('Đã lưu cấu hình máy chủ!', 'ok');
+        closeModal();
+        connectEvents();
+        // Retry checking license or session with new server
+        const licOk = await checkLicense();
+        if (licOk) {
+          await checkSession();
+        }
+      });
+    }
+
+    if (btnPresetTunnel) {
+      btnPresetTunnel.addEventListener('click', () => {
+        if (inModal) inModal.value = Api.DEFAULT_TUNNEL_URL;
+        btnTest?.click();
+      });
+    }
+
+    if (btnPresetLan) {
+      btnPresetLan.addEventListener('click', () => {
+        if (inModal) inModal.value = 'http://192.168.1.4:3000';
+        btnTest?.click();
+      });
+    }
+
+    updateAllServerDisplays();
   }
 
   function bindNotifications() {

@@ -11,8 +11,8 @@ const Api = (() => {
   const HWID_KEY = 'olm.device_hwid';
   const LICENSE_KEY = 'olm.license';
 
-  // URL backend mặc định khi deploy trên Render (dùng cho mobile app iOS và web Vercel)
-  const DEFAULT_CLOUD_URL = 'https://olm-solver.onrender.com';
+  // URL Cloudflare Tunnel mặc định kết nối tới máy tính (dùng cho mobile app iOS khi dùng 4G/5G hoặc ngoài Wi-Fi)
+  const DEFAULT_TUNNEL_URL = 'https://gsm-parking-wherever-super.trycloudflare.com';
 
   function getServerUrl() {
     try {
@@ -22,13 +22,12 @@ const Api = (() => {
       /* ignore */
     }
 
-    // Nếu chạy trên điện thoại (Capacitor iOS/Android) hoặc chạy trên frontend Vercel:
-    // Tự động trỏ về Cloud Render backend
+    // Nếu chạy trên điện thoại (Capacitor iOS/Android) hoặc trên origin khác:
+    // Mặc định trỏ về đường link Cloudflare Tunnel của máy tính
     const isNative = Boolean(window.Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:');
-    const isVercel = Boolean(window.location.hostname.includes('vercel.app'));
 
-    if (isNative || isVercel) {
-      return DEFAULT_CLOUD_URL;
+    if (isNative) {
+      return DEFAULT_TUNNEL_URL;
     }
 
     return '';
@@ -232,7 +231,8 @@ const Api = (() => {
     setToken,
     getServerUrl,
     setServerUrl,
-    DEFAULT_CLOUD_URL,
+    DEFAULT_TUNNEL_URL,
+    DEFAULT_CLOUD_URL: DEFAULT_TUNNEL_URL,
     getDeviceHWID,
     getStoredLicense,
     saveLicense,

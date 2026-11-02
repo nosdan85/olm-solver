@@ -84,6 +84,15 @@
       <div class="login-hint">
         <span>🔒 Tự động ghi nhớ phiên đăng nhập vĩnh viễn</span>
       </div>
+
+      <!-- Server Connection Status Pill -->
+      <div class="server-config-card" style="margin-top: 14px; padding: 10px 12px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+        <div style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">
+          <span style="color: #9ca3af;">🌐 Máy chủ:</span>
+          <strong id="login-server-label" style="color: #60a5fa; font-family: monospace; font-size: 11px; margin-left: 4px;">Đang kiểm tra...</strong>
+        </div>
+        <button type="button" class="btn btn-mini btn-ghost" id="btn-open-server-config" style="flex-shrink: 0; padding: 4px 8px; font-size: 11px; font-weight: 600; border-color: rgba(96, 165, 250, 0.4); color: #60a5fa; cursor: pointer;">⚙️ Đổi</button>
+      </div>
     </div>
   </section>
 
@@ -348,6 +357,42 @@
     <p class="muted small" style="text-align: center; margin-top: 14px; font-size: 12px; line-height: 1.4;">
       Chưa có key hoặc key hết hạn? Vui lòng liên hệ Admin để nhận mã kích hoạt.
     </p>
+
+    <div style="text-align: center; margin-top: 12px;">
+      <button type="button" class="btn-link" id="btn-license-server-config" style="font-size: 12px; color: #60a5fa; background: none; border: none; cursor: pointer; text-decoration: underline;">⚙️ Cài đặt địa chỉ máy chủ Server</button>
+    </div>
+  </div>
+</div>
+
+<!-- -------------------------------------------------- Server Config Modal -->
+<div id="modal-server-config" class="modal-overlay" style="display: none;">
+  <div class="modal-card">
+    <div style="font-size: 32px; text-align: center; margin-bottom: 6px;">🌐</div>
+    <h2 style="font-size: 18px; text-align: center; margin-bottom: 6px; font-weight: 800;">Cấu Hình Máy Chủ Server</h2>
+    <p class="muted" style="text-align: center; font-size: 12px; line-height: 1.5; margin-bottom: 16px;">
+      Máy chủ đang chạy trực tiếp trên máy tính của bạn. Nhập link Cloudflare Tunnel hoặc IP LAN để điện thoại kết nối qua 4G, 5G hoặc WiFi:
+    </p>
+
+    <label class="field" style="margin-bottom: 12px;">
+      <span>Địa chỉ Máy Chủ</span>
+      <input id="in-modal-server" type="url" placeholder="https://xxx.trycloudflare.com hoặc http://192.168.1.x:3000" autocapitalize="off" autocorrect="off" spellcheck="false" style="font-family: monospace; font-size: 13px;">
+    </label>
+
+    <div id="modal-server-status" class="alert alert-info" style="display: none; margin-bottom: 12px; font-size: 12px;"></div>
+
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button type="button" class="btn btn-ghost" id="btn-modal-test-server" style="flex: 1;">🔍 Kiểm tra</button>
+      <button type="button" class="btn btn-primary" id="btn-modal-save-server" style="flex: 1;">💾 Lưu & Kết Nối</button>
+    </div>
+
+    <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
+      <button type="button" class="btn btn-ghost btn-mini btn-block" id="btn-preset-tunnel" style="font-size: 11px; text-align: left; padding: 6px 10px;">⚡ Dùng link Cloudflare Tunnel hiện tại</button>
+      <button type="button" class="btn btn-ghost btn-mini btn-block" id="btn-preset-lan" style="font-size: 11px; text-align: left; padding: 6px 10px;">🏠 Dùng mạng nội bộ WiFi (192.168.1.4:3000)</button>
+    </div>
+
+    <div style="text-align: center; margin-top: 14px;">
+      <button type="button" class="btn-link" id="btn-close-server-modal" style="font-size: 13px; color: #9ca3af; background: none; border: none; cursor: pointer;">Đóng cửa sổ</button>
+    </div>
   </div>
 </div>
 

@@ -243,6 +243,7 @@ const Api = (() => {
     clearCredentials,
 
     health: () => request('/api/health'),
+    tunnel: () => request('/api/tunnel'),
     login: (username, password) => request('/api/login', { method: 'POST', body: { username, password } }),
     loginWithCookie: (cookie) => request('/api/login-cookie', { method: 'POST', body: { cookie } }),
     logout: () => request('/api/logout', { method: 'POST' }),

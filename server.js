@@ -14,6 +14,7 @@ const answerEngine = require('./src/answer-engine');
 const browserEngine = require('./src/browser-engine');
 const runner = require('./src/runner');
 const H = require('./src/humanize');
+const tunnelManager = require('./src/tunnel');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -103,7 +104,13 @@ app.get('/api/health', (req, res) => {
     provider: answerEngine.isOpenAiProvider() ? 'openai' : 'openai-compatible',
     fallbacks: answerEngine.providers().slice(1).map((p) => p.model),
     uptime: Math.round(process.uptime()),
+    tunnelUrl: tunnelManager.getUrl() || null,
   });
+});
+
+app.get('/api/tunnel', (req, res) => {
+  const url = tunnelManager.getUrl();
+  res.json({ ok: true, active: !!url, url: url || null });
 });
 
 app.post('/api/login', async (req, res) => {
@@ -557,4 +564,8 @@ app.listen(PORT, HOST, () => {
     console.log(`  fallbacks   ${fallbacks.map((p) => p.model).join(', ')}`);
   }
   console.log('');
+
+  if (process.env.AUTO_TUNNEL !== 'false') {
+    tunnelManager.start(PORT).catch(() => {});
+  }
 });

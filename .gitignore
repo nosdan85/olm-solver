@@ -4,3 +4,5 @@ node_modules/
 data/sessions.json
 .browser-profile/
 screenshots/
+cloudflared.exe
+data/tunnel.json

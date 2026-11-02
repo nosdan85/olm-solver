@@ -688,34 +688,41 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
       await H.sleep(400);
     }
 
-    // Self-healing fallback: if step === 0 and no question found, check if result screen is still visible
+    // Self-healing fallback: if step === 0 and no question found, check if result screen is actively visible
     if (step === 0 && (!question || (!question.text && !question.imageBase64))) {
-      const redoClicked = await page.evaluate(() => {
-        const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
-        if (byId) { byId.click(); return true; }
-        const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
-          const t = (el.innerText || el.textContent || '').trim();
-          return /luyện tập lại|làm lại bài/i.test(t) && t.length < 35;
-        });
-        if (candidates.length > 0) {
-          const btn = candidates[candidates.length - 1];
-          (btn.closest('button, a, div[role=button]') || btn).click();
-          return true;
-        }
-        return false;
+      const isResultScreen = await page.evaluate(() => {
+        const text = document.body ? document.body.innerText || '' : '';
+        return /đừng nản lòng|kết quả luyện tập|kết quả bài làm|chúc mừng bạn đã hoàn thành/i.test(text);
       });
 
-      if (redoClicked) {
-        if (log) log('info', 'Phát hiện màn hình bài cũ, đang nhấn "Luyện tập lại"...');
-        await H.sleep(1200);
-        await page.evaluate(() => {
-          const cBtn = Array.from(document.querySelectorAll('button, a, div, span')).find((b) =>
-            /^(xác nhận|đồng ý)$/i.test((b.innerText || '').trim())
-          );
-          if (cBtn) (cBtn.closest('button, a, div[role=button]') || cBtn).click();
+      if (isResultScreen) {
+        const redoClicked = await page.evaluate(() => {
+          const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
+          if (byId) { byId.click(); return true; }
+          const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
+            const t = (el.innerText || el.textContent || '').trim();
+            return /luyện tập lại|làm lại bài/i.test(t) && t.length < 35;
+          });
+          if (candidates.length > 0) {
+            const btn = candidates[candidates.length - 1];
+            (btn.closest('button, a, div[role=button]') || btn).click();
+            return true;
+          }
+          return false;
         });
-        await H.sleep(2000);
-        question = await scanCurrentQuestion(page, 0, homework.subject, log);
+
+        if (redoClicked) {
+          if (log) log('info', 'Phát hiện màn hình bài cũ, đang nhấn "Luyện tập lại"...');
+          await H.sleep(1200);
+          await page.evaluate(() => {
+            const cBtn = Array.from(document.querySelectorAll('button, a, div, span')).find((b) =>
+              /^(xác nhận|đồng ý)$/i.test((b.innerText || '').trim())
+            );
+            if (cBtn) (cBtn.closest('button, a, div[role=button]') || cBtn).click();
+          });
+          await H.sleep(2000);
+          question = await scanCurrentQuestion(page, 0, homework.subject, log);
+        }
       }
     }
 
@@ -904,73 +911,84 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       }, { timeout: 15000 });
     } catch {}
 
-    // 2. Kiểm tra nếu bài tập đã hoàn thành từ trước (hiển thị nút "Luyện tập lại" hoặc màn hình kết quả "Đừng nản lòng")
-    let redoClicked = false;
-    for (let r = 0; r < 5; r++) {
-      redoClicked = await page.evaluate(() => {
-        const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
-        if (byId) {
-          byId.click();
-          return true;
-        }
+    // 2. Kiểm tra xem bài tập có đang ở màn hình kết quả của bài đã hoàn thành từ trước không
+    const isAlreadyDoneScreen = await page.evaluate(() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      const hasResultText = /đừng nản lòng|kết quả luyện tập|kết quả bài làm|chúc mừng bạn đã hoàn thành/i.test(text) ||
+                            (/xem đáp án/i.test(text) && /thời gian làm bài|đúng.*câu|sai.*câu/i.test(text));
+      const hasResultBox = !!document.querySelector('.practice-result, .box-result, .box-score, .modal-result, .result-practice');
+      const hasActiveQuiz = !!(document.querySelector('.tw-olm-chip-question') ||
+                               document.querySelector('default-root')?.shadowRoot?.querySelector('type-quiz-x-mobile, type-quiz-x, .qselect'));
+      return (hasResultText || hasResultBox) && !hasActiveQuiz;
+    });
 
-        const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
-          const text = (el.innerText || el.textContent || '').trim();
-          return /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text) ||
-                 (text.includes('Luyện tập lại') && text.length < 35);
-        });
-
-        if (candidates.length > 0) {
-          const target = candidates[candidates.length - 1];
-          const clickable = target.closest('button, a, div[role=button]') || target;
-          clickable.click();
-          clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          return true;
-        }
-
-        return false;
-      });
-
-      if (redoClicked) break;
-      await H.sleep(600);
-    }
-
-    if (redoClicked) {
+    if (isAlreadyDoneScreen) {
       if (log) log('info', 'Phát hiện bài đã làm từ trước -> Đang nhấn "Luyện tập lại" để làm lại bài...');
+      let redoClicked = false;
+      for (let r = 0; r < 5; r++) {
+        redoClicked = await page.evaluate(() => {
+          const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
+          if (byId) {
+            byId.click();
+            return true;
+          }
 
-      // Chờ popup modal xác nhận xuất hiện ("Bạn có chắc xóa dữ liệu bài này để làm lại?")
-      await H.sleep(1000);
-      try {
-        await page.waitForSelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm', {
-          visible: true,
-          timeout: 5000,
+          const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
+            const text = (el.innerText || el.textContent || '').trim();
+            return /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text) ||
+                   (text.includes('Luyện tập lại') && text.length < 35);
+          });
+
+          if (candidates.length > 0) {
+            const target = candidates[candidates.length - 1];
+            const clickable = target.closest('button, a, div[role=button]') || target;
+            clickable.click();
+            clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            return true;
+          }
+
+          return false;
         });
-      } catch {}
 
-      // Nhấn nút "Xác nhận" trên popup
-      await page.evaluate(() => {
-        const popupBtn = document.querySelector('.popup-primary-button');
-        if (popupBtn) {
-          popupBtn.click();
-          popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          return;
-        }
-        const confirmBtns = Array.from(document.querySelectorAll('button, a, div, span')).filter((b) =>
-          /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || b.textContent || '').trim()) &&
-          !b.classList.contains('btn-submit-cate')
-        );
-        if (confirmBtns.length > 0) {
-          const btn = confirmBtns[confirmBtns.length - 1];
-          const clickable = btn.closest('button, a, div[role=button]') || btn;
-          clickable.click();
-          clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        }
-      });
+        if (redoClicked) break;
+        await H.sleep(600);
+      }
 
-      if (log) log('info', 'Đã xác nhận làm lại bài, đang nạp câu hỏi mới...');
+      if (redoClicked) {
+        // Chờ popup modal xác nhận xuất hiện ("Bạn có chắc xóa dữ liệu bài này để làm lại?")
+        await H.sleep(1000);
+        try {
+          await page.waitForSelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm', {
+            visible: true,
+            timeout: 5000,
+          });
+        } catch {}
 
-      // Chờ modal đóng và màn hình kết quả biến mất, câu hỏi mới nạp
-      await H.sleep(2500);
+        // Nhấn nút "Xác nhận" trên popup
+        await page.evaluate(() => {
+          const popupBtn = document.querySelector('.popup-primary-button');
+          if (popupBtn) {
+            popupBtn.click();
+            popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            return;
+          }
+          const confirmBtns = Array.from(document.querySelectorAll('button, a, div, span')).filter((b) =>
+            /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || b.textContent || '').trim()) &&
+            !b.classList.contains('btn-submit-cate')
+          );
+          if (confirmBtns.length > 0) {
+            const btn = confirmBtns[confirmBtns.length - 1];
+            const clickable = btn.closest('button, a, div[role=button]') || btn;
+            clickable.click();
+            clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          }
+        });
+
+        if (log) log('info', 'Đã xác nhận làm lại bài, đang nạp câu hỏi mới...');
+
+        // Chờ modal đóng và màn hình kết quả biến mất, câu hỏi mới nạp
+        await H.sleep(2500);
+      }
     }
 
     // 3. Kiểm tra xem có chip câu hỏi trắc nghiệm hiện đại không (.tw-olm-chip-question)

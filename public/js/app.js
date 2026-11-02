@@ -35,6 +35,7 @@
     bindLicense();
     registerSW();
     connectEvents();
+    startAutoScan();
     const licOk = await checkLicense();
     if (licOk) {
       await checkSession();
@@ -406,12 +407,12 @@
     }
   }
 
-  async function refreshHomeworks() {
+  async function refreshHomeworks(silent = false) {
     const list = $('#hw-list');
-    if (!state.homeworks.length) {
+    if (!silent && !state.homeworks.length) {
       list.innerHTML = '<div class="empty">Đang tải danh sách bài tập OLM…</div>';
     }
-    setStatus('Đang quét bài tập…', 'busy');
+    if (!silent) setStatus('Đang quét bài tập…', 'busy');
 
     try {
       const res = await Api.homeworks();
@@ -419,24 +420,36 @@
       const customHws = state.homeworks.filter((h) => h.subject === 'Tự thêm');
       state.homeworks = [...customHws, ...serverHws.filter((sh) => !customHws.some((ch) => ch.id === sh.id))];
 
-      // REQUIREMENT: DO NOT auto-select all homeworks by default
-      state.selected.clear();
-
       renderHomeworks();
       const todoCount = state.homeworks.filter((h) => !h.isDone && !h.isExpired).length;
-      setStatus(`Sẵn sàng (${todoCount} bài chưa làm)`, 'on');
-      appendLog({
-        ts: Date.now(),
-        level: 'info',
-        message: `Đã quét được ${res.count} bài tập (${todoCount} bài chưa làm) từ OLM`,
-      });
-    } catch (err) {
-      if (!state.homeworks.length) {
-        list.innerHTML = `<div class="empty">Không quét được danh sách bài tập tự động.<br><span class="muted small">Vui lòng bấm "+ Dán link bài" ở trên để giải bài OLM mong muốn!</span></div>`;
+      if (!silent) {
+        setStatus(`Sẵn sàng (${todoCount} bài chưa làm)`, 'on');
+        appendLog({
+          ts: Date.now(),
+          level: 'info',
+          message: `Đã quét được ${res.count} bài tập (${todoCount} bài chưa làm) từ OLM`,
+        });
       }
-      setStatus('Sẵn sàng làm bài', 'on');
-      appendLog({ ts: Date.now(), level: 'warn', message: `Chưa quét được bài: ${err.message}` });
+    } catch (err) {
+      if (!silent) {
+        if (!state.homeworks.length) {
+          list.innerHTML = `<div class="empty">Không quét được danh sách bài tập tự động.<br><span class="muted small">Vui lòng bấm "+ Dán link bài" ở trên để giải bài OLM mong muốn!</span></div>`;
+        }
+        setStatus('Sẵn sàng làm bài', 'on');
+        appendLog({ ts: Date.now(), level: 'warn', message: `Chưa quét được bài: ${err.message}` });
+      }
     }
+  }
+
+  // Quét liên tục danh sách bài tập (mỗi 12 giây một lần ngầm)
+  let autoScanTimer = null;
+  function startAutoScan() {
+    if (autoScanTimer) clearInterval(autoScanTimer);
+    autoScanTimer = setInterval(() => {
+      if (Api.token() && state.tab === 'homework' && !state.runId) {
+        refreshHomeworks(true);
+      }
+    }, 12000);
   }
 
   function renderHomeworks() {
@@ -855,6 +868,46 @@
         connectEvents();
       });
     }
+
+    // Cloudflare Tunnel public URL loader & copy
+    const tunnelInput = $('#in-tunnel-url');
+    const tunnelStatus = $('#tunnel-status-text');
+    const copyTunnelBtn = $('#btn-copy-tunnel');
+
+    async function loadTunnelUrl() {
+      try {
+        const res = await Api.tunnel();
+        if (res && res.url) {
+          if (tunnelInput) tunnelInput.value = res.url;
+          if (tunnelStatus) {
+            tunnelStatus.textContent = '✔ Đường link công khai đã sẵn sàng (mở được từ điện thoại 4G/WiFi bất kỳ)!';
+            tunnelStatus.style.color = 'var(--ok)';
+          }
+        } else {
+          if (tunnelInput) tunnelInput.placeholder = 'Chưa bật tunnel (đang chạy local/cloud)';
+        }
+      } catch {}
+    }
+
+    if (copyTunnelBtn && tunnelInput) {
+      copyTunnelBtn.addEventListener('click', async () => {
+        const val = tunnelInput.value.trim();
+        if (!val) {
+          toast('Chưa có đường link công khai', 'warn');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(val);
+          toast('Đã sao chép link! Mở link này trên điện thoại', 'ok');
+        } catch {
+          tunnelInput.select();
+          document.execCommand('copy');
+          toast('Đã sao chép link!', 'ok');
+        }
+      });
+    }
+
+    loadTunnelUrl();
   }
 
   function bindNotifications() {

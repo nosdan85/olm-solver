@@ -137,21 +137,37 @@ function resolveSubmitWindow(windowSpec, now = new Date()) {
 // mid  -> ~35% wrong
 // low  -> ~55% wrong
 // random -> anywhere in 0..60%
+function formatScoreTarget(scoreTarget) {
+  const t = String(scoreTarget || 'high').trim().toLowerCase();
+  if (t === 'high' || t === 'cao' || t === '10' || t === 'max') return 'Cao (~9.0 - 10.0đ | 100% chính xác)';
+  if (t === 'mid' || t === 'kha' || t === 'medium' || t === '9') return 'Khá (~8.0 - 9.0đ | 90% chính xác)';
+  if (t === 'low' || t === 'trungbinh' || t === '8') return 'Trung bình (~7.0 - 8.0đ | 80% chính xác)';
+  return `${scoreTarget}đ`;
+}
+
+// high / cao  -> 100% đúng (0 wrong)
+// mid / kha   -> 90% đúng (~10% wrong)
+// low / trungbinh -> 80% đúng (~20% wrong)
 function wrongRatioForScore(scoreTarget) {
-  const targetStr = String(scoreTarget || '10').trim().toLowerCase();
+  const targetStr = String(scoreTarget || 'high').trim().toLowerCase();
   switch (targetStr) {
     case '10':
     case 'max':
-      return 0; // 10 điểm = giải đúng tuyệt đối 100%
-    case '9':
     case 'high':
-      return 0.10;
-    case '8':
+    case 'cao':
+      return 0; // Khoảng điểm Cao = giải đúng tối đa 100%
+    case '9':
     case 'mid':
-      return 0.20;
+    case 'medium':
+    case 'kha':
+      return 0.10; // Khoảng điểm Khá = độ chính xác 90%
+    case '8':
+    case 'low':
+    case 'trungbinh':
+      return 0.20; // Khoảng điểm Trung bình = độ chính xác 80%
     case '7':
       return 0.30;
-    case 'low':
+    case '5':
       return 0.50;
     case 'random':
       return Math.random() * 0.4;
@@ -170,13 +186,13 @@ function planWrongAnswers(questions, scoreTarget) {
   const total = questions.length;
   if (!total) return { wrongIndices: new Set(), plannedWrongs: new Map(), ratio: 0 };
 
-  const targetStr = String(scoreTarget || '10').trim().toLowerCase();
+  const targetStr = String(scoreTarget || 'high').trim().toLowerCase();
   let target = 10;
-  if (targetStr === 'max' || targetStr === '10') target = 10;
-  else if (targetStr === 'high' || targetStr === '9') target = 9;
-  else if (targetStr === 'mid' || targetStr === '8') target = 8;
+  if (targetStr === 'max' || targetStr === '10' || targetStr === 'high' || targetStr === 'cao') target = 10;
+  else if (targetStr === 'mid' || targetStr === 'medium' || targetStr === 'kha' || targetStr === '9') target = 9;
+  else if (targetStr === 'low' || targetStr === 'trungbinh' || targetStr === '8') target = 8;
   else if (targetStr === '7') target = 7;
-  else if (targetStr === 'low' || targetStr === '5') target = 5;
+  else if (targetStr === '5') target = 5;
   else if (/^\d+(\.\d+)?$/.test(targetStr)) target = Math.min(10, Math.max(0, Number(targetStr)));
 
   if (target >= 10) {
@@ -285,6 +301,7 @@ module.exports = {
   resolveSubmitWindow,
   wrongRatioForScore,
   planWrongAnswers,
+  formatScoreTarget,
   RateGuard,
   SPEEDS,
   setSpeed,

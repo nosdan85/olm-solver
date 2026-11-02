@@ -14,7 +14,7 @@
     es: null,
     currentUser: '',
     settings: {
-      scoreTarget: '10',
+      scoreTarget: 'high',
       speed: 'normal',
       engine: 'auto',
       concurrency: 2,
@@ -621,7 +621,7 @@
 
     // Concurrency & settings
     const config = {
-      scoreTarget: state.settings.scoreTarget || '10',
+      scoreTarget: state.settings.scoreTarget || 'high',
       submitDelayMinutes: state.settings.submitDelayMinutes || 0,
       speed: state.settings.speed || 'normal',
       engine: state.settings.engine || 'auto',
@@ -663,7 +663,7 @@
       appendLog({
         ts: Date.now(),
         level: 'info',
-        message: `🚀 Bắt đầu giải ${res.homeworks} bài (Đa luồng: ${config.concurrency} bài cùng lúc, Target: ${config.scoreTarget}đ)`,
+        message: `🚀 Bắt đầu giải ${res.homeworks} bài (Đa luồng: ${config.concurrency} bài cùng lúc, Khoảng điểm: ${formatScoreLabel(config.scoreTarget)})`,
       });
       setRunStatus('running');
       setStatus('Đang giải bài…', 'busy');
@@ -774,13 +774,19 @@
     if (dot) dot.className = `dot-status ${status}`;
   }
 
-  // --------------------------------------------------------- settings
+  function formatScoreLabel(val) {
+    if (val === 'high' || val === '10' || val === 'cao') return 'Cao (100% chính xác)';
+    if (val === 'mid' || val === '9' || val === 'kha') return 'Khá (90% chính xác)';
+    if (val === 'low' || val === '8' || val === 'trungbinh') return 'Trung bình (80% chính xác)';
+    return val;
+  }
 
   function bindSettings() {
     $$('#opt-score input').forEach((radio) => {
       radio.addEventListener('change', () => {
         state.settings.scoreTarget = radio.value;
         saveSettings();
+        toast(`Đã chọn khoảng điểm: ${formatScoreLabel(radio.value)}`, 'ok');
       });
     });
 
@@ -1177,7 +1183,13 @@
     const saved = Api.loadSettings();
     state.settings = { ...state.settings, ...saved };
 
-    const scoreRadio = $(`#opt-score input[value="${state.settings.scoreTarget || '10'}"]`);
+    let curTarget = state.settings.scoreTarget || 'high';
+    if (curTarget === '10' || curTarget === 'max') curTarget = 'high';
+    else if (curTarget === '9') curTarget = 'mid';
+    else if (curTarget === '8') curTarget = 'low';
+    state.settings.scoreTarget = curTarget;
+
+    const scoreRadio = $(`#opt-score input[value="${curTarget}"]`);
     if (scoreRadio) scoreRadio.checked = true;
 
     const delayRadio = $(`#opt-delay input[value="${state.settings.submitDelayMinutes ?? 0}"]`);

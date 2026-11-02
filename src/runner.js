@@ -115,7 +115,7 @@ async function startRun({ session, homeworks, config, sessionId }) {
   runs.set(runId, run);
 
   const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
-  log(runId, 'info', `Bắt đầu tiến trình: ${homeworks.length} bài tập, mức điểm "${config.scoreTarget}", đa luồng: ${concurrency} bài/lúc`);
+  log(runId, 'info', `Bắt đầu tiến trình: ${homeworks.length} bài tập, khoảng điểm "${H.formatScoreTarget(config.scoreTarget)}", đa luồng: ${concurrency} bài/lúc`);
   emit(runId, 'started', { homeworks: run.homeworks.length, concurrency });
 
   // Do the work in the background so the HTTP request returns immediately.

@@ -411,15 +411,19 @@ function parseModelJson(content) {
 
 function buildBatchPrompt(questions) {
   const lines = [
-    'Bạn là chuyên gia giải bài tập và đề thi chuẩn xác 100% theo chương trình SGK mới của Bộ GD&ĐT.',
+    'Bạn là chuyên gia giải bài tập và đề thi chuẩn xác 100% theo chương trình SGK mới của Bộ GD&ĐT (Chương trình GDPT 2018).',
     'Giải các câu hỏi dưới đây. Mỗi câu có một ID duy nhất.',
-    'Trả về DUY NHẤT JSON hợp lệ dạng: {"answers":[{"id":"q_1","explanation":"<phân tích loại trừ trước>","correctIndex":0,"answer":"...","statements":[true]}]}',
+    'Trả về DUY NHẤT JSON hợp lệ dạng: {"answers":[{"id":"q_1","explanation":"<phân tích loại trừ trước>","correctIndex":0,"correctIndices":[0,2],"answer":"...","statements":[true]}]}',
     'Không bỏ qua câu nào. Giữ nguyên chính xác ID được cung cấp.',
-    'Quy tắc:',
-    '1. Luôn viết "explanation" trước để phân tích cẩn thận từng chất, công thức hoặc mệnh đề.',
-    '2. Đối với câu trắc nghiệm: chỉ định "correctIndex" (0 cho đáp án A, 1 cho B, 2 cho C, 3 cho D).',
-    '3. Đối với câu tự luận/trả lời ngắn/điền khuyết/đếm số chất: điền vào trường "answer" kết quả chính xác, ngắn gọn nhất theo SGK (con số, tên chất, từ khóa cốt lõi).',
-    '4. Đối với câu Đúng/Sai: "statements" là mảng boolean [true/false] theo thứ tự các ý.',
+    'Quy tắc giải chuẩn xác:',
+    '1. Luôn viết "explanation" trước để phân tích cẩn thận từng chất, công thức hóa học, mệnh đề hoặc số liệu.',
+    '2. Đối với câu trắc nghiệm 1 đáp án: chỉ định "correctIndex" (0 cho A, 1 cho B, 2 cho C, 3 cho D) và "answer".',
+    '3. Đối với câu trắc nghiệm chọn nhiều đáp án đúng ("chọn những câu đúng"): chỉ định "correctIndices" là mảng các chỉ số đúng (ví dụ: [0, 2]).',
+    '4. Đối với câu Đúng/Sai: "statements" là mảng boolean [true, false,...] theo đúng thứ tự các ý.',
+    '5. Đối với câu trả lời ngắn/điền số/đếm số chất:',
+    '   - Đọc kỹ yêu cầu đề bài (ví dụ: đếm số chất, tính khối lượng, sắp xếp dãy số thứ tự tăng dần).',
+    '   - Với câu điền số hoặc dãy số, CHỈ ĐIỀN CON SỐ (ví dụ: 123 hoặc 4370 hoặc 80,2), KHÔNG điền kèm đơn vị tính như kg, g, %, tấn nếu không bắt buộc.',
+    '   - Tuân thủ quy tắc làm tròn số của đề bài (hàng đơn vị, hàng phần chục, hàng phần trăm).',
   ];
 
   for (const q of questions) {
@@ -429,6 +433,13 @@ function buildBatchPrompt(questions) {
     if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
       lines.push('Mệnh đề Đúng/Sai:');
       (q.statements || []).forEach((s, i) => lines.push(`  [${i}] ${s}`));
+    } else if (q.type === 'multi_choice') {
+      lines.push('Dạng chọn nhiều đáp án đúng (chọn những phát biểu / câu đúng):');
+      (q.options || []).forEach((o, i) => {
+        const letter = String.fromCharCode(65 + i);
+        lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
+      });
+      lines.push('-> Chọn TẤT CẢ các đáp án đúng và trả về mảng "correctIndices": [...]');
     } else if (Array.isArray(q.options) && q.options.length) {
       lines.push('Danh sách 4 đáp án lựa chọn:');
       q.options.forEach((o, i) => {
@@ -472,14 +483,31 @@ function validateBatchAnswers(parsed, questions) {
       if (!Array.isArray(result.statements) || result.statements.length < (q.statements || []).length) {
         throw new Error(`Missing true/false statements for ${id}`);
       }
+    } else if (q.type === 'multi_choice') {
+      let correctIndices = [];
+      if (Array.isArray(item.correctIndices)) {
+        correctIndices = item.correctIndices.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < (q.options || []).length);
+      } else if (Number.isInteger(item.correctIndex)) {
+        correctIndices = [item.correctIndex];
+      }
+      result.correctIndices = correctIndices.length ? correctIndices : [0];
+      result.correctIndex = result.correctIndices[0] ?? 0;
+      if (!result.answer) result.answer = (q.options && q.options[result.correctIndex]) || '';
     } else if (Array.isArray(q.options) && q.options.length) {
       result.correctIndex = normalizeIndex(item.correctIndex ?? item.index ?? item.answer, q.options.length);
       if (result.correctIndex < 0 && item.answer) {
         const cleanAns = String(item.answer).trim().toLowerCase();
+        // 1. Try exact match first
         result.correctIndex = q.options.findIndex((o) => {
-          const cleanO = String(o).trim().toLowerCase();
-          return cleanO === cleanAns || cleanO.includes(cleanAns) || cleanAns.includes(cleanO);
+          return String(o).trim().toLowerCase() === cleanAns;
         });
+        // 2. Substring match only if cleanAns is long enough (>= 4 chars)
+        if (result.correctIndex < 0 && cleanAns.length >= 4) {
+          result.correctIndex = q.options.findIndex((o) => {
+            const cleanO = String(o).trim().toLowerCase();
+            return cleanO.includes(cleanAns) || cleanAns.includes(cleanO);
+          });
+        }
       }
       if (result.correctIndex < 0 && item.explanation) {
         const expMatch = String(item.explanation).match(/(?:chọn|đáp án|phương án)\s*([A-D])/i);

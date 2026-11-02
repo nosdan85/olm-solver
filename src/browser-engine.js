@@ -323,7 +323,8 @@ async function scanCurrentQuestion(page, index, subject, log) {
         const sign = el.querySelector('.qsign, .content, .option-text, label');
         let t = (sign ? sign.innerText : el.innerText) || '';
         t = t.replace(/^[\s\u200B\xA0]+|[\s\u200B\xA0]+$/g, '');
-        return t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+        const stripped = t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+        return stripped || t.trim();
       }).filter(Boolean);
       return {
         type: 'multi_choice',
@@ -367,8 +368,8 @@ async function scanCurrentQuestion(page, index, subject, log) {
       const sign = el.querySelector('.qsign, .content, .option-text, label');
       let t = (sign ? sign.innerText : el.innerText) || '';
       t = t.replace(/^[\s\u200B\xA0]+|[\s\u200B\xA0]+$/g, '');
-      t = t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
-      return t;
+      const stripped = t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+      return stripped || t.trim();
     }).filter(Boolean);
 
     return {
@@ -592,10 +593,18 @@ async function fillCurrentQuestion(page, question, answer) {
     // C. By text content match
     if (!chosen && answer.answer) {
       const ansStr = String(answer.answer).trim().toLowerCase();
+      // Try exact match first
       chosen = optionEls.find((el) => {
         const text = el.innerText.trim().toLowerCase();
-        return text === ansStr || text.includes(ansStr) || ansStr.includes(text);
+        return text === ansStr;
       });
+      // Substring match only if length >= 4 to avoid single number/letter collisions
+      if (!chosen && ansStr.length >= 4) {
+        chosen = optionEls.find((el) => {
+          const text = el.innerText.trim().toLowerCase();
+          return text.includes(ansStr) || ansStr.includes(text);
+        });
+      }
       if (chosen) targetIdx = optionEls.indexOf(chosen);
     }
 
@@ -641,8 +650,9 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   emit?.('scan-complete', { total: questions.length });
 
   const answerEngine = require('./answer-engine');
-  const textQuestions = questions.filter((q) => !q.hasImage && q.scanStatus === 'scanned');
-  const imageQuestions = questions.filter((q) => q.hasImage && q.scanStatus === 'scanned');
+  // Any question with an image or screenshot is handled via Vision AI
+  const textQuestions = questions.filter((q) => !q.hasImage && !q.imageBase64 && q.scanStatus === 'scanned');
+  const imageQuestions = questions.filter((q) => (q.hasImage || q.imageBase64) && q.scanStatus === 'scanned');
   const batchSize = Math.max(1, Number(config.aiBatchSize || process.env.AI_BATCH_SIZE || 5));
   const answers = new Map();
   const batches = [];
@@ -650,7 +660,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   for (const q of imageQuestions) batches.push([q]);
 
   if (log) {
-    log('info', `Đang xử lý ${questions.length} câu hỏi (${imageQuestions.length ? imageQuestions.length + ' câu hình/sơ đồ, ' : ''}${textQuestions.length} câu chữ)...`);
+    log('info', `Đang xử lý ${questions.length} câu hỏi (${imageQuestions.length ? imageQuestions.length + ' câu hình/sơ đồ/trả lời ngắn, ' : ''}${textQuestions.length} câu chữ)...`);
   }
 
   emit?.('phase', { phase: 'solving', total: questions.length, batches: batches.length });
@@ -716,11 +726,11 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   const plan = H.planWrongAnswers(plannedQuestions, config.scoreTarget);
   emit?.('phase', { phase: 'filling', total: questions.length });
 
-  const targetScoreStr = config.scoreTarget || '10';
+  const targetScoreDesc = H.formatScoreTarget(config.scoreTarget);
   const wrongCount = plan.wrongIndices.size;
   const correctCount = questions.length - wrongCount;
   if (log) {
-    log('info', `✍ Bắt đầu điền đáp án (${questions.length} câu, mục tiêu: ${targetScoreStr}đ -> đúng ${correctCount} câu, sai ${wrongCount} câu)...`);
+    log('info', `✍ Bắt đầu điền đáp án (${questions.length} câu, khoảng điểm: ${targetScoreDesc} -> đúng ${correctCount} câu, sai ${wrongCount} câu)...`);
   }
 
   let filled = 0;

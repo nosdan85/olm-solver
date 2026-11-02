@@ -781,6 +781,16 @@
     const es = new EventSource(esUrl);
     state.es = es;
 
+    es.onopen = () => {
+      if (state.tab === 'homework') {
+        setStatus('Sẵn sàng làm bài', 'on');
+      } else if (state.tab === 'login') {
+        setStatus(Api.token() ? 'Đã đăng nhập' : 'Chưa đăng nhập', Api.token() ? 'on' : '');
+      } else {
+        setStatus('Đã kết nối máy chủ', 'on');
+      }
+    };
+
     es.onmessage = (event) => {
       let data;
       try {
@@ -822,7 +832,6 @@
         const pText = $('#run-progress-text');
         if (pText) pText.textContent = 'Đã hoàn thành toàn bộ bài tập!';
 
-        // NOTIFICATION REQUIREMENT: iPhone receives notification when completed!
         notify(
           'OLM Solver - Hoàn tất!',
           'Đã hoàn thành giải toàn bộ các bài tập OLM được chọn!'
@@ -841,7 +850,13 @@
     };
 
     es.onerror = () => {
-      setStatus('Mất kết nối SSE', 'err');
+      const isMobileApp = Boolean(window.Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:');
+      const hasCustomUrl = Boolean(Api.getServerUrl && Api.getServerUrl());
+      if (isMobileApp && !hasCustomUrl) {
+        setStatus('Chưa cấu hình máy chủ', 'warn');
+      } else {
+        setStatus('Mất kết nối máy chủ', 'err');
+      }
       es.close();
       state.es = null;
       setTimeout(connectEvents, 5000);

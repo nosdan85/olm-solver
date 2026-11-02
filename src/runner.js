@@ -292,6 +292,9 @@ async function executeRun(run, session, config) {
     log(run.id, 'info', `🚀 Bắt đầu xử lý song song ${workerCount} bài cùng lúc...`);
 
     async function worker(workerId) {
+      if (workerId > 0) {
+        await new Promise((r) => setTimeout(r, workerId * 3500));
+      }
       while (queue.length > 0) {
         const hi = queue.shift();
         if (hi === undefined) break;

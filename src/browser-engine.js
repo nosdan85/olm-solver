@@ -823,9 +823,22 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
   }
 
   try {
+    await page.setRequestInterception(true).catch(() => {});
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      const u = req.url().toLowerCase();
+      if (type === 'media' || u.includes('analytics') || u.includes('facebook') || u.includes('doubleclick') || u.includes('clarity.ms') || u.includes('hotjar')) {
+        req.abort().catch(() => {});
+      } else {
+        req.continue().catch(() => {});
+      }
+    });
+  } catch {}
+
+  try {
     if (log) log('info', `Mở bài tập: ${homework.url}`);
     try {
-      await page.goto(homework.url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await page.goto(homework.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     } catch (navErr) {
       if (log) log('warn', `Trang tải chậm (${navErr.message}), đang kiểm tra nội dung...`);
     }
@@ -833,7 +846,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
     try {
       await page.waitForSelector('default-root, .tw-olm-chip-question, .question-container, .question-item, .question, #question-container, type-quiz-x, type-quiz-x-mobile', {
         visible: true,
-        timeout: 15000,
+        timeout: 20000,
       });
     } catch {
       await H.sleep(2500);
@@ -858,7 +871,8 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       return !!(root || hasQuizElement || hasCheckBtn);
     });
 
-    if (isFlowPractice) {
+    const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
+    if (isFlowPractice || isChuDeUrl) {
       return await solveFlowPractice(page, { homework, config, log, emit });
     }
 

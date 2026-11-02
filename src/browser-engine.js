@@ -140,7 +140,7 @@ async function scanCurrentQuestion(page, index, subject, log) {
     const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
     if (!root) return { type: 'choice', text: '', options: [] };
 
-    // 1. Essay / Short Answer (<type-paragraph>)
+    // 1. Essay / Paragraph (<type-paragraph>)
     const typePara = root.querySelector('type-paragraph')?.shadowRoot || root.querySelector('type-paragraph');
     if (typePara) {
       const p = typePara.querySelector('#paragraph');
@@ -153,7 +153,20 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 2. True / False (<type-true-fasle>)
+    // 2. Fill-in-the-blank / Short answer (<type-fill-me>)
+    const fillMe = root.querySelector('type-fill-me')?.shadowRoot || root.querySelector('type-fill-me');
+    if (fillMe) {
+      const p = fillMe.querySelector('#fillme-input, .question-content') || fillMe;
+      let text = p ? p.innerText.trim() : '';
+      text = text.replace(/Bài làm[\s\S]*$/i, '').trim();
+      return {
+        type: 'short_answer',
+        text,
+        options: []
+      };
+    }
+
+    // 3. True / False (<type-true-fasle>)
     const tf = root.querySelector('type-true-fasle')?.shadowRoot || root.querySelector('type-true-fasle');
     if (tf) {
       const content = tf.querySelector('.question-content');
@@ -165,7 +178,7 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 3. General Short Answer / Textarea inside root
+    // 4. General Short Answer / Textarea inside root
     const directTextarea = root.querySelector('textarea.typing-para, .text-para, textarea');
     if (directTextarea) {
       const qContent = root.querySelector('.question-content, #paragraph, .question');
@@ -176,7 +189,7 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 4. Choice (<type-quiz-x>, <type-quiz-multi>, or general)
+    // 5. Choice (<type-quiz-x>, <type-quiz-multi>, or general)
     const quiz = root.querySelector('type-quiz-x, type-quiz-multi')?.shadowRoot || root.querySelector('type-quiz-x, type-quiz-multi') || root;
     const qContent = quiz.querySelector('.question-content, #paragraph, .question');
     const text = (qContent?.innerText || '').trim();
@@ -197,7 +210,7 @@ async function scanCurrentQuestion(page, index, subject, log) {
 
   const hasImage = await page.evaluate(() => {
     const root = document.querySelector('default-root')?.shadowRoot;
-    const content = root?.querySelector('.question-content, #paragraph') || document.querySelector('.question-content, .question');
+    const content = root?.querySelector('.question-content, #paragraph, #fillme-input') || document.querySelector('.question-content, .question');
     if (!content) return false;
     const img = content.querySelector('img:not(.emoji):not(.icon), canvas');
     if (img) return true;
@@ -247,21 +260,23 @@ async function fillCurrentQuestion(page, question, answer) {
       return { ok: true };
     }
 
-    // 2. Short Answer / Essay (<type-paragraph> or textarea)
+    // 2. Short Answer / Essay / Fill-me (<type-paragraph>, <type-fill-me>, textarea, or input)
     if (question.type === 'short_answer') {
       const typePara = root.querySelector('type-paragraph')?.shadowRoot || root.querySelector('type-paragraph');
-      const textarea = typePara?.querySelector('textarea.typing-para, .text-para, textarea') ||
-                       root.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"]') ||
-                       document.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"]');
-      if (!textarea) return { ok: false, reason: 'short-answer-control-missing' };
+      const fillMe = root.querySelector('type-fill-me')?.shadowRoot || root.querySelector('type-fill-me');
+      const input = fillMe?.querySelector('input') ||
+                    typePara?.querySelector('textarea.typing-para, .text-para, textarea') ||
+                    root.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"], input:not([type])') ||
+                    document.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"], input:not([type])');
+      if (!input) return { ok: false, reason: 'short-answer-control-missing' };
       
       const value = String(answer.answer || '').trim();
-      textarea.focus();
-      textarea.value = value;
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      textarea.dispatchEvent(new Event('change', { bubbles: true }));
-      textarea.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
-      return { ok: true, value: textarea.value };
+      input.focus();
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
+      return { ok: true, value: input.value };
     }
 
     // 3. Multiple Choice

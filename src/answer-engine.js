@@ -337,14 +337,14 @@ function buildPrompt(question) {
     lines.push('');
     lines.push(
       'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
-        '{"correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<ngắn gọn>", "explanation": "<giải thích ngắn>"}'
+        '{"explanation": "<suy luận phân tích ngắn>", "correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<ngắn gọn>"}'
     );
   } else {
     lines.push('');
     lines.push(
-      'Đây là câu hỏi trả lời ngắn/tự luận/điền số. ' +
+      'Đây là câu hỏi trả lời ngắn/tự luận/điền số/đếm số lượng chất. ' +
       'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
-        '{"answer": "<con số hoặc đáp án ngắn gọn nhất>", "explanation": "<giải thích ngắn>"}'
+        '{"explanation": "<phân tích, loại trừ và đếm cẩn thận từng dữ kiện>", "answer": "<con số hoặc đáp án ngắn gọn nhất>"}'
     );
   }
   return lines.join('\n');
@@ -371,15 +371,19 @@ function parseModelJson(content) {
 
 function buildBatchPrompt(questions) {
   const lines = [
+    'Bạn là chuyên gia giải bài tập và đề thi chuẩn xác 100% theo chương trình SGK mới của Bộ GD&ĐT.',
     'Giải các câu hỏi dưới đây. Mỗi câu có một ID duy nhất.',
-    'Trả về DUY NHẤT JSON hợp lệ dạng: {"answers":[{"id":"q_1","correctIndex":0,"answer":"...","statements":[true],"explanation":"..."}]}',
+    'Trả về DUY NHẤT JSON hợp lệ dạng: {"answers":[{"id":"q_1","explanation":"<phân tích loại trừ trước>","correctIndex":0,"answer":"...","statements":[true]}]}',
     'Không bỏ qua câu nào. Giữ nguyên chính xác ID được cung cấp.',
-    'Đối với câu trắc nghiệm: chỉ định "correctIndex" (0 cho đáp án A, 1 cho B, 2 cho C, 3 cho D).',
-    'Đối với câu tự luận/trả lời ngắn: điền vào trường "answer" nội dung chính xác, ngắn gọn nhất theo SGK (tên người, địa danh, văn kiện, con số hoặc từ ngữ cốt lõi, không viết thành câu văn dài).',
+    'Quy tắc:',
+    '1. Luôn viết "explanation" trước để phân tích cẩn thận từng chất, công thức hoặc mệnh đề.',
+    '2. Đối với câu trắc nghiệm: chỉ định "correctIndex" (0 cho đáp án A, 1 cho B, 2 cho C, 3 cho D).',
+    '3. Đối với câu tự luận/trả lời ngắn/điền khuyết/đếm số chất: điền vào trường "answer" kết quả chính xác, ngắn gọn nhất theo SGK (con số, tên chất, từ khóa cốt lõi).',
+    '4. Đối với câu Đúng/Sai: "statements" là mảng boolean [true/false] theo thứ tự các ý.',
   ];
 
   for (const q of questions) {
-    lines.push(`\\nID: ${q.id}`);
+    lines.push(`\nID: ${q.id}`);
     lines.push(`Môn học: ${q.subject || ''}`);
     lines.push(`Câu hỏi: ${q.text || '(xem nội dung đã cung cấp)'}`);
     if (q.type === 'true_false' || Array.isArray(q.statements)) {
@@ -389,7 +393,7 @@ function buildBatchPrompt(questions) {
       lines.push('Lựa chọn:');
       q.options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
     } else {
-      lines.push('Dạng tự luận/trả lời ngắn: ghi đáp án ngắn gọn nhất theo chuẩn SGK vào "answer".');
+      lines.push('Dạng tự luận/trả lời ngắn/điền số: ghi đáp án ngắn gọn nhất theo chuẩn SGK vào "answer".');
     }
   }
   return lines.join('\n');

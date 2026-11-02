@@ -23,10 +23,10 @@
     "createdAt": 1793618659920,
     "activatedAt": 1793619015394,
     "expiresAt": 1793878215394,
-    "hwid": "c87373c0-8dfa-4130-a777-b421a21d1bfe",
+    "hwid": null,
     "deviceInfo": null,
     "status": "active",
     "notes": "",
-    "lastChecked": 1793628399717
+    "lastChecked": 1793629402721
   }
 }

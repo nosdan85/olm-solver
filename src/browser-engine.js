@@ -735,12 +735,13 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
       }
     }
 
-    // 2. Scan current question with retries
+    // 2. Scan current question with retries (allow more time on step 0 for SPA to mount)
     let question = null;
-    for (let r = 0; r < 4; r++) {
+    const maxRetries = step === 0 ? 12 : 5;
+    for (let r = 0; r < maxRetries; r++) {
       question = await scanCurrentQuestion(page, step, homework.subject, log);
       if (question.text || question.imageBase64) break;
-      await H.sleep(400);
+      await H.sleep(step === 0 ? 600 : 350);
     }
 
     // Self-healing fallback: if step === 0 and no question found, check if result screen is actively visible
@@ -799,6 +800,10 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
         });
         if (isResultScreen) {
           throw new Error('Bài tập vẫn đang ở màn hình kết quả cũ và OLM không thể nạp câu hỏi mới (Giáo viên đã khóa bài tập này hoặc không cho phép học sinh tự xóa bài để làm lại).');
+        }
+        const bodyLen = await page.evaluate(() => (document.body?.innerText || '').length);
+        if (bodyLen < 50) {
+          throw new Error('Trang OLM chưa tải xong nội dung (Lỗi mạng hoặc tải chậm). Vui lòng thử lại.');
         }
       }
       if (log) log('info', `Không còn câu hỏi tiếp theo, hoàn tất bài tập.`);
@@ -953,24 +958,23 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
   }
 
   try {
-    await page.setRequestInterception(true).catch(() => {});
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      const u = req.url().toLowerCase();
-      if (type === 'media' || u.includes('analytics') || u.includes('facebook') || u.includes('doubleclick') || u.includes('clarity.ms') || u.includes('hotjar')) {
-        req.abort().catch(() => {});
-      } else {
-        req.continue().catch(() => {});
-      }
-    });
-  } catch {}
-
-  try {
     if (log) log('info', `Mở bài tập: ${homework.url}`);
-    try {
-      await page.goto(homework.url, { waitUntil: 'domcontentloaded', timeout: 35000 });
-    } catch (navErr) {
-      if (log) log('warn', `Trang tải chậm (${navErr.message}), đang kiểm tra nội dung...`);
+    let navOk = false;
+    let lastNavErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (log && attempt > 1) log('info', `Đang thử tải lại trang bài tập (lần ${attempt}/3)...`);
+        await page.goto(homework.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        navOk = true;
+        break;
+      } catch (navErr) {
+        lastNavErr = navErr;
+        if (log) log('warn', `Trang tải chậm (${navErr.message})`);
+        await H.sleep(1500);
+      }
+    }
+    if (!navOk) {
+      throw new Error(`Không thể tải trang bài tập OLM (${lastNavErr?.message || 'net::ERR_TIMED_OUT'}). Vui lòng kiểm tra lại kết nối mạng.`);
     }
 
     // Check if Cloudflare Turnstile challenge is present

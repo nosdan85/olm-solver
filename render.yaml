@@ -16,7 +16,7 @@ services:
       - key: OPENAI_AUTH_HEADER
         value: bearer
       - key: ADMIN_PASSWORD
-        value: admin@olm888
+        value: MayNgu789@
       - key: PUPPETEER_HEADLESS
         value: "true"
       - key: SESSION_SECRET

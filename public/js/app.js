@@ -105,6 +105,10 @@
 
   // ----------------------------------------------------------- login
 
+  // ----------------------------------------------------------- login
+
+  let currentLoginTab = 'account';
+
   function bindLogin() {
     $('#btn-login').addEventListener('click', doLogin);
     $('#btn-login-rescan').addEventListener('click', doLogin);
@@ -114,14 +118,79 @@
     $('#in-username').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') $('#in-password').focus();
     });
+
+    const tabAcc = $('#tab-login-account');
+    const tabCookie = $('#tab-login-cookie');
+    const formAcc = $('#login-form-account');
+    const formCookie = $('#login-form-cookie');
+
+    if (tabAcc && tabCookie) {
+      tabAcc.addEventListener('click', () => {
+        currentLoginTab = 'account';
+        tabAcc.style.background = '#3b82f6';
+        tabAcc.style.color = '#fff';
+        tabCookie.style.background = 'transparent';
+        tabCookie.style.color = '#9ca3af';
+        if (formAcc) formAcc.hidden = false;
+        if (formCookie) formCookie.hidden = true;
+      });
+
+      tabCookie.addEventListener('click', () => {
+        currentLoginTab = 'cookie';
+        tabCookie.style.background = '#3b82f6';
+        tabCookie.style.color = '#fff';
+        tabAcc.style.background = 'transparent';
+        tabAcc.style.color = '#9ca3af';
+        if (formAcc) formAcc.hidden = true;
+        if (formCookie) formCookie.hidden = false;
+        $('#in-cookie')?.focus();
+      });
+    }
   }
 
   async function doLogin() {
+    const errorBox = $('#login-error');
+    errorBox.hidden = true;
+
+    const btn = $('#btn-login');
+
+    if (currentLoginTab === 'cookie') {
+      const cookie = ($('#in-cookie')?.value || '').trim();
+      if (!cookie) {
+        errorBox.textContent = 'Vui lòng dán chuỗi Cookie OLM.';
+        errorBox.hidden = false;
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Đang kiểm tra cookie…';
+      setStatus('Đang xác thực Cookie OLM…', 'busy');
+
+      try {
+        const res = await Api.loginWithCookie(cookie);
+        Api.setToken(res.sessionId);
+        state.currentUser = res.username || 'Học sinh OLM';
+        updateSessionDisplay(state.currentUser);
+
+        setStatus(`Đã đăng nhập: ${state.currentUser}`, 'on');
+        appendLog({ ts: Date.now(), level: 'success', message: `Đăng nhập bằng Cookie thành công (${state.currentUser})` });
+        updateAuthTabs(true);
+        switchTab('homework');
+        await refreshHomeworks();
+      } catch (err) {
+        errorBox.textContent = err.message || 'Đăng nhập bằng Cookie thất bại.';
+        errorBox.hidden = false;
+        setStatus('Đăng nhập thất bại', 'err');
+        appendLog({ ts: Date.now(), level: 'error', message: `Cookie login failed: ${err.message}` });
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Đăng nhập';
+      }
+      return;
+    }
+
     const username = $('#in-username').value.trim();
     const password = $('#in-password').value;
-    const errorBox = $('#login-error');
-
-    errorBox.hidden = true;
 
     if (!username || !password) {
       errorBox.textContent = 'Vui lòng nhập đủ tài khoản và mật khẩu.';
@@ -129,7 +198,6 @@
       return;
     }
 
-    const btn = $('#btn-login');
     btn.disabled = true;
     btn.textContent = 'Đang đăng nhập…';
     setStatus('Đang kết nối OLM…', 'busy');
@@ -149,7 +217,11 @@
       switchTab('homework');
       await refreshHomeworks();
     } catch (err) {
-      errorBox.textContent = err.message || 'Đăng nhập thất bại.';
+      let errMsg = err.message || 'Đăng nhập thất bại.';
+      if (/cloudflare/i.test(errMsg)) {
+        errMsg += ' (Bạn có thể chuyển sang tab "🍪 Dán Cookie OLM" ở trên để đăng nhập trực tiếp).';
+      }
+      errorBox.textContent = errMsg;
       errorBox.hidden = false;
       setStatus('Đăng nhập thất bại', 'err');
       appendLog({ ts: Date.now(), level: 'error', message: `Login failed: ${err.message}` });

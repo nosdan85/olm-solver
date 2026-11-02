@@ -1,6 +1,6 @@
 node_modules/
 .env
 *.log
-data/
+data/sessions.json
 .browser-profile/
 screenshots/

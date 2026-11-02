@@ -48,15 +48,33 @@
       <h1>Đăng nhập OLM</h1>
       <p class="muted">Đăng nhập tài khoản học sinh OLM. Hệ thống sẽ duy trì đăng nhập vĩnh viễn trên iPhone/thiết bị này trừ khi bạn chủ động đăng xuất.</p>
 
-      <label class="field">
-        <span>Tài khoản OLM</span>
-        <input id="in-username" type="text" autocomplete="username" inputmode="text" placeholder="Tên đăng nhập" autocapitalize="off" autocorrect="off" spellcheck="false">
-      </label>
+      <!-- Login Method Tabs -->
+      <div class="login-tab-switch" style="display: flex; gap: 6px; margin: 14px 0; background: rgba(255,255,255,0.06); padding: 4px; border-radius: 10px;">
+        <button type="button" class="login-tab-btn active" id="tab-login-account" style="flex: 1; padding: 8px 10px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;">Tài khoản & Mật khẩu</button>
+        <button type="button" class="login-tab-btn" id="tab-login-cookie" style="flex: 1; padding: 8px 10px; border-radius: 8px; border: none; background: transparent; color: #9ca3af; font-weight: 600; cursor: pointer; font-size: 13px;">🍪 Dán Cookie OLM</button>
+      </div>
 
-      <label class="field">
-        <span>Mật khẩu</span>
-        <input id="in-password" type="password" autocomplete="current-password" placeholder="••••••••">
-      </label>
+      <div id="login-form-account">
+        <label class="field">
+          <span>Tài khoản OLM</span>
+          <input id="in-username" type="text" autocomplete="username" inputmode="text" placeholder="Tên đăng nhập" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </label>
+
+        <label class="field">
+          <span>Mật khẩu</span>
+          <input id="in-password" type="password" autocomplete="current-password" placeholder="••••••••">
+        </label>
+      </div>
+
+      <div id="login-form-cookie" hidden>
+        <label class="field">
+          <span>Chuỗi Cookie OLM</span>
+          <textarea id="in-cookie" rows="3" placeholder="Dán cookie (onlinemath_session=...) vào đây..." style="width: 100%; border-radius: 8px; padding: 10px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.1); color: #fff; font-size: 12px; font-family: monospace; resize: vertical; box-sizing: border-box;"></textarea>
+        </label>
+        <div style="font-size: 12px; color: #9ca3af; margin-bottom: 12px; line-height: 1.4;">
+          💡 <b>Cách lấy Cookie:</b> Đăng nhập olm.vn trên Chrome &rarr; F12 &rarr; Console &rarr; gõ <code>copy(document.cookie)</code> rồi dán vào đây (vào ngay 100% không lo Cloudflare).
+        </div>
+      </div>
 
       <div id="login-error" class="alert alert-error" hidden></div>
 

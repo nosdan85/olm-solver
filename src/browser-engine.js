@@ -82,7 +82,38 @@ async function login(browser, { username, password, loginUrl, log }) {
   await page.setUserAgent(H.pick(require('./olm-client').USER_AGENTS));
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8' });
 
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+
+  // Wait up to 20s for login inputs to be rendered (allowing Cloudflare Turnstile or SPA scripts to mount)
+  try {
+    await page.waitForSelector('input#username, input[name="username"], input[type="password"]', {
+      visible: true,
+      timeout: 15000,
+    });
+  } catch {
+    const title = await page.title().catch(() => '');
+    if (log) log('info', `Waiting for login inputs timed out. Page title: "${title}", URL: "${page.url()}"`);
+
+    // Check if Cloudflare Turnstile frame is present and attempt to click checkbox
+    for (const frame of page.frames()) {
+      try {
+        const cfBox = await frame.$('input[type="checkbox"], #challenge-stage, .ctp-checkbox-label');
+        if (cfBox) {
+          if (log) log('info', 'Found Cloudflare Turnstile checkbox, clicking...');
+          await cfBox.click();
+          await H.sleep(3000);
+          break;
+        }
+      } catch {}
+    }
+
+    try {
+      await page.waitForSelector('input#username, input[name="username"], input[type="password"]', {
+        visible: true,
+        timeout: 10000,
+      });
+    } catch {}
+  }
 
   // Find the username/password inputs from the live DOM.
   const selectors = await page.evaluate(() => {
@@ -98,8 +129,13 @@ async function login(browser, { username, password, loginUrl, log }) {
   });
 
   if (!selectors.username || !selectors.password) {
-    await page.close();
-    throw new Error('Could not locate the login fields in the page');
+    const pageTitle = await page.title().catch(() => '');
+    const pageHtml = await page.content().catch(() => '');
+    await page.close().catch(() => {});
+    if (/just a moment|cloudflare|attention required/i.test(pageTitle + pageHtml)) {
+      throw new Error('Cloudflare yêu cầu xác minh bảo mật từ máy chủ. Vui lòng sử dụng tính năng "Đăng nhập bằng Cookie OLM" để đăng nhập ngay lập tức.');
+    }
+    throw new Error('Không thể tìm thấy ô đăng nhập OLM trên trang web. Vui lòng thử lại hoặc dùng Cookie.');
   }
 
   const uSel = `input[name="${selectors.username}"], input#${selectors.username}`;
@@ -134,37 +170,53 @@ async function login(browser, { username, password, loginUrl, log }) {
   });
 
   if (!clicked) {
-    await page.click('button.btn-submit, .btn-submit, input[type=submit]');
+    await page.click('button.btn-submit, .btn-submit, input[type=submit]').catch(() => {});
   }
 
-  // Wait for redirect to dashboard or error alert
+  // Wait for redirect to dashboard, or cookies, or error alert
   try {
-    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+      page.waitForFunction(() => {
+        const modal = document.querySelector('.main-modal-v2-content, .swal2-html-container, .toast, .alert, .tw-text-danger, .text-danger');
+        return !!(modal && modal.innerText.trim());
+      }, { timeout: 15000 }),
+    ]);
   } catch {
     /* OLM may update via SPA or show error alert */
   }
 
   await H.sleep(2000);
 
+  const cookies = await page.cookies();
+  const hasSessionCookie = cookies.some((c) => c.name === 'onlinemath_session' || c.name === 'laravel_session');
   const currentUrl = page.url();
-  const stillOnLogin = /dang-?nhap/i.test(currentUrl);
+  const stillOnLogin = /dang-?nhap/i.test(currentUrl) && !hasSessionCookie;
 
   if (stillOnLogin) {
     const errText = await page.evaluate(() => {
       const modal = document.querySelector('.main-modal-v2-content, .swal2-html-container, .toast, .alert, .tw-text-danger, .text-danger');
-      if (modal) return modal.innerText.trim();
+      if (modal && modal.innerText.trim()) {
+        const text = modal.innerText.trim();
+        // Extract the error sentence if nested
+        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác/i);
+        return m ? m[0].trim() : text;
+      }
       const anyErr = Array.from(document.querySelectorAll('div, p, span')).find(el => 
         /không chính xác|sai mật khẩu|sai tên|tài khoản không tồn tại/i.test(el.innerText || '')
       );
-      return anyErr ? anyErr.innerText.trim() : null;
+      if (anyErr && anyErr.innerText.trim()) {
+        const text = anyErr.innerText.trim();
+        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác/i);
+        return m ? m[0].trim() : text;
+      }
+      return null;
     });
-    await page.close();
-    throw new Error(errText || 'Sai tên đăng nhập hoặc mật khẩu OLM');
+    await page.close().catch(() => {});
+    throw new Error(errText || 'Tên đăng nhập hoặc mật khẩu OLM không chính xác.');
   }
 
-  const cookies = await page.cookies();
   if (log) log('info', `Browser login OK (${cookies.length} cookies)`);
-
   return { page, cookies };
 }
 

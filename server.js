@@ -173,6 +173,54 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+app.post('/api/login-cookie', async (req, res) => {
+  const { cookie, cookieString } = req.body || {};
+  const rawCookie = String(cookie || cookieString || '').trim();
+  if (!rawCookie) {
+    return res.status(400).json({ error: 'Vui lòng cung cấp chuỗi Cookie OLM' });
+  }
+
+  try {
+    const { CookieJar } = require('tough-cookie');
+    const jar = new CookieJar();
+    const parts = rawCookie.split(';');
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed || !trimmed.includes('=')) continue;
+      const [name, ...val] = trimmed.split('=');
+      const cookieStr = `${name.trim()}=${val.join('=').trim()}; Domain=olm.vn; Path=/`;
+      await jar.setCookie(cookieStr, 'https://olm.vn').catch(() => {});
+    }
+
+    const client = OlmClient.fromSerialized(jar.toJSON());
+    // Verify cookie validity by checking homeworks or main page
+    let username = 'Học sinh OLM';
+    try {
+      const { items } = await client.fetchHomeworks();
+      if (items && items.length > 0 && items[0].author) {
+        username = items[0].author;
+      }
+    } catch {
+      const r = await client.request('GET', 'https://olm.vn', { timeout: 15000 });
+      if (r.status >= 400 || (typeof r.data === 'string' && r.data.includes('/dangnhap') && !rawCookie.includes('onlinemath_session'))) {
+        throw new Error('Cookie OLM không hợp lệ hoặc đã hết hạn.');
+      }
+    }
+
+    const session = sessionStore.create(username, client.serialize(), client.ua);
+    res.json({
+      ok: true,
+      sessionId: session.id,
+      username: session.username,
+      message: 'Đăng nhập bằng Cookie thành công!',
+    });
+  } catch (err) {
+    console.error('[login-cookie error]', err.message);
+    res.status(401).json({ error: err.message || 'Không thể đăng nhập bằng Cookie này' });
+  }
+});
+
+
 app.post('/api/logout', requireSession, (req, res) => {
   sessionStore.destroy(req.olmSession.id);
   res.json({ ok: true });
@@ -283,6 +331,25 @@ app.post('/api/admin/delete', requireAdmin, (req, res) => {
     res.status(400).json({ error: err.message });
   }
 });
+
+app.get('/api/admin/licenses/export', requireAdmin, (req, res) => {
+  const data = licenseStore.exportAll();
+  res.setHeader('Content-Disposition', `attachment; filename="olm_licenses_backup_${Date.now()}.json"`);
+  res.setHeader('Content-Type', 'application/json');
+  res.json({ ok: true, count: Object.keys(data).length, licenses: data });
+});
+
+app.post('/api/admin/licenses/import', requireAdmin, (req, res) => {
+  const { data, licenses: licList, merge = true } = req.body || {};
+  try {
+    const payload = data || licList;
+    const result = licenseStore.importAll(payload, { merge: merge !== false });
+    res.json({ ok: true, message: `Đã khôi phục thành công ${result.count} mã bản quyền!`, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 
 // Start a run over the selected homeworks.
 app.post('/api/run', requireLicense, requireSession, async (req, res) => {

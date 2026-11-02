@@ -202,6 +202,7 @@ const Api = (() => {
 
     health: () => request('/api/health'),
     login: (username, password) => request('/api/login', { method: 'POST', body: { username, password } }),
+    loginWithCookie: (cookie) => request('/api/login-cookie', { method: 'POST', body: { cookie } }),
     logout: () => request('/api/logout', { method: 'POST' }),
     session: () => request('/api/session'),
     homeworks: () => request('/api/homeworks'),

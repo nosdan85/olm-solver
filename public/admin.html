@@ -378,7 +378,12 @@
       <div class="card">
         <div class="card-title">
           <span>Danh Sách Người Dùng & Bản Quyền</span>
-          <button class="btn btn-secondary btn-sm" onclick="loadLicenses()">🔄 Tải lại</button>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="exportLicenses()">📥 Sao lưu (JSON)</button>
+            <button class="btn btn-secondary btn-sm" onclick="triggerImport()">📤 Khôi phục (JSON)</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadLicenses()">🔄 Tải lại</button>
+            <input type="file" id="import-file-input" accept=".json" style="display:none;" onchange="handleFileImport(event)">
+          </div>
         </div>
 
         <div class="search-bar">
@@ -467,6 +472,61 @@
         throw new Error('Hết phiên quản trị hoặc sai mật khẩu');
       }
       return res.json();
+    }
+
+    async function exportLicenses() {
+      try {
+        const token = getAdminToken();
+        const res = await fetch(`${API_BASE}/api/admin/licenses/export`, {
+          headers: { 'X-Admin-Password': token }
+        });
+        if (!res.ok) throw new Error('Không thể tải bản sao lưu');
+        const data = await res.json();
+        const jsonStr = JSON.stringify(data.licenses || data, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `olm_licenses_backup_${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } catch (err) {
+        alert('Lỗi sao lưu: ' + err.message);
+      }
+    }
+
+    function triggerImport() {
+      document.getElementById('import-file-input').click();
+    }
+
+    async function handleFileImport(e) {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+        try {
+          const raw = JSON.parse(evt.target.result);
+          const payload = raw.licenses || raw;
+          const res = await adminFetch('/api/admin/licenses/import', {
+            method: 'POST',
+            body: JSON.stringify({ data: payload })
+          });
+          if (res.ok) {
+            alert(res.message || 'Khôi phục thành công!');
+            loadLicenses();
+          } else {
+            alert('Lỗi khôi phục: ' + (res.error || 'Dữ liệu không hợp lệ'));
+          }
+        } catch (err) {
+          alert('Lỗi đọc tệp JSON: ' + err.message);
+        } finally {
+          e.target.value = '';
+        }
+      };
+      reader.readAsText(file);
     }
 
     async function loadLicenses() {

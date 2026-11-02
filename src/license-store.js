@@ -36,15 +36,30 @@ function formatRemaining(expiresAt) {
 
 function load() {
   ensureDataDir();
-  if (!fs.existsSync(LICENSE_FILE)) return;
-  try {
-    const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
-    for (const [key, item] of Object.entries(raw)) {
-      licenses.set(key, item);
+  if (fs.existsSync(LICENSE_FILE)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
+      for (const [key, item] of Object.entries(raw)) {
+        licenses.set(key, item);
+      }
+      console.log(`[license-store] Loaded ${licenses.size} license(s) from disk`);
+    } catch (err) {
+      console.error(`[license-store] Failed to load licenses: ${err.message}`);
     }
-    console.log(`[license-store] Loaded ${licenses.size} license(s) from disk`);
-  } catch (err) {
-    console.error(`[license-store] Failed to load licenses: ${err.message}`);
+  }
+
+  // Fallback: If disk has 0 licenses, check process.env.LICENSES_BACKUP_JSON
+  if (licenses.size === 0 && process.env.LICENSES_BACKUP_JSON) {
+    try {
+      const envRaw = JSON.parse(process.env.LICENSES_BACKUP_JSON);
+      for (const [key, item] of Object.entries(envRaw)) {
+        licenses.set(key, item);
+      }
+      console.log(`[license-store] Loaded ${licenses.size} license(s) from LICENSES_BACKUP_JSON env`);
+      persist();
+    } catch (e) {
+      console.error(`[license-store] Failed to parse LICENSES_BACKUP_JSON: ${e.message}`);
+    }
   }
 }
 
@@ -307,6 +322,59 @@ function deleteKey(key) {
   return deleted;
 }
 
+function exportAll() {
+  const out = {};
+  for (const [key, item] of licenses) {
+    out[key] = item;
+  }
+  return out;
+}
+
+function importAll(data, { merge = true } = {}) {
+  if (!data || typeof data !== 'object') {
+    throw new Error('Dữ liệu khôi phục không hợp lệ');
+  }
+
+  const entries = Array.isArray(data)
+    ? data.map(item => [item.key, item])
+    : Object.entries(data);
+
+  if (entries.length === 0) {
+    throw new Error('Không tìm thấy dữ liệu license trong file');
+  }
+
+  if (!merge) {
+    licenses.clear();
+  }
+
+  let count = 0;
+  for (const [rawKey, item] of entries) {
+    if (!rawKey || !item || typeof item !== 'object') continue;
+    const key = String(item.key || rawKey).trim().toUpperCase();
+    if (!key) continue;
+
+    licenses.set(key, {
+      key,
+      name: item.name || 'Khách hàng',
+      nameNormalized: item.nameNormalized || normalizeName(item.name || ''),
+      type: item.type || '1_month',
+      durationDays: item.durationDays !== undefined ? item.durationDays : 30,
+      createdAt: item.createdAt || Date.now(),
+      activatedAt: item.activatedAt || null,
+      expiresAt: item.expiresAt || null,
+      hwid: item.hwid || null,
+      deviceInfo: item.deviceInfo || null,
+      status: item.status || 'unused',
+      notes: item.notes || '',
+      lastChecked: item.lastChecked || null,
+    });
+    count++;
+  }
+
+  persist();
+  return { count, total: licenses.size };
+}
+
 // Auto-load on require
 load();
 
@@ -319,4 +387,6 @@ module.exports = {
   resetHwid,
   deleteKey,
   formatRemaining,
+  exportAll,
+  importAll,
 };

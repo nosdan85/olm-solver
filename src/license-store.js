@@ -40,6 +40,9 @@ function load() {
     try {
       const raw = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
       for (const [key, item] of Object.entries(raw)) {
+        if (!item.nameNormalized && item.name) {
+          item.nameNormalized = normalizeName(item.name);
+        }
         licenses.set(key, item);
       }
       console.log(`[license-store] Loaded ${licenses.size} license(s) from disk`);
@@ -176,7 +179,8 @@ function activate({ key, name, hwid, deviceInfo = '' }) {
   }
 
   // So khớp tên
-  if (normalizeName(name) !== lic.nameNormalized) {
+  const expectedName = lic.nameNormalized || normalizeName(lic.name);
+  if (normalizeName(name) !== expectedName) {
     return {
       ok: false,
       error: `Tên người dùng không khớp với tên đăng ký của mã này (Tên đã đăng ký: "${lic.name}")`,

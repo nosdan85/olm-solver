@@ -302,15 +302,30 @@ async function scanCurrentQuestion(page, index, subject, log) {
     // 5. Choice (<type-quiz-x>, <type-quiz-multi>, <type-quiz-x-mobile>, or general)
     const quiz = root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz')?.shadowRoot ||
                  root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
-    const qContent = quiz.querySelector('.question-content, #paragraph, .question');
+    const qContent = quiz.querySelector('.question-content, #paragraph, .question') ||
+                     root.querySelector('.question-content, #paragraph, .question') ||
+                     document.querySelector('.question-content, #paragraph, .question');
     const text = (qContent?.innerText || '').trim();
 
-    // Query ONLY immediate option wrappers (.qselect or direct choices)
+    // Query option wrappers across quiz shadowRoot, root, or document
     let optionEls = Array.from(quiz.querySelectorAll('.qselect'));
     if (!optionEls.length) {
-      optionEls = Array.from(quiz.querySelectorAll('.choice-item, .option, .answer-item'));
+      optionEls = Array.from(quiz.querySelectorAll('[ind], .choice-item, .option, .answer-item, .quiz-option'));
     }
-    const options = optionEls.map(el => el.innerText.trim()).filter(Boolean);
+    if (!optionEls.length && root !== quiz) {
+      optionEls = Array.from(root.querySelectorAll('.qselect, [ind], .choice-item, .option, .answer-item'));
+    }
+    if (!optionEls.length) {
+      optionEls = Array.from(document.querySelectorAll('.qselect, [ind], .choice-item, .option, .answer-item'));
+    }
+
+    const options = optionEls.map((el) => {
+      const sign = el.querySelector('.qsign, .content, .option-text, label');
+      let t = (sign ? sign.innerText : el.innerText) || '';
+      t = t.replace(/^[\s\u200B\xA0]+|[\s\u200B\xA0]+$/g, '');
+      t = t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+      return t;
+    }).filter(Boolean);
 
     return {
       type: 'choice',
@@ -318,6 +333,33 @@ async function scanCurrentQuestion(page, index, subject, log) {
       options
     };
   }, index);
+
+  // If choice question but options are empty, poll up to 1.5s for Lit components to finish rendering
+  if (data?.type === 'choice' && (!data.options || data.options.length === 0)) {
+    for (let r = 0; r < 6; r++) {
+      await H.sleep(250);
+      const pollOpts = await page.evaluate(() => {
+        const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
+        if (!root) return [];
+        const quiz = root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz')?.shadowRoot ||
+                     root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
+        let els = Array.from(quiz.querySelectorAll('.qselect'));
+        if (!els.length) els = Array.from(quiz.querySelectorAll('[ind], .choice-item, .option, .answer-item'));
+        if (!els.length && root !== quiz) els = Array.from(root.querySelectorAll('.qselect, [ind], .choice-item, .option'));
+        if (!els.length) els = Array.from(document.querySelectorAll('.qselect, [ind], .choice-item, .option'));
+        return els.map((el) => {
+          const sign = el.querySelector('.qsign, .content, .option-text, label');
+          let t = (sign ? sign.innerText : el.innerText) || '';
+          t = t.replace(/^[\s\u200B\xA0]+|[\s\u200B\xA0]+$/g, '');
+          return t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+        }).filter(Boolean);
+      });
+      if (pollOpts && pollOpts.length > 0) {
+        data.options = pollOpts;
+        break;
+      }
+    }
+  }
 
   const hasImage = await page.evaluate(() => {
     const root = document.querySelector('default-root')?.shadowRoot;
@@ -395,7 +437,13 @@ async function fillCurrentQuestion(page, question, answer) {
                  root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
     let optionEls = Array.from(quiz.querySelectorAll('.qselect'));
     if (!optionEls.length) {
-      optionEls = Array.from(quiz.querySelectorAll('.choice-item, .option, .answer-item'));
+      optionEls = Array.from(quiz.querySelectorAll('[ind], .choice-item, .option, .answer-item'));
+    }
+    if (!optionEls.length && root !== quiz) {
+      optionEls = Array.from(root.querySelectorAll('.qselect, [ind], .choice-item, .option, .answer-item'));
+    }
+    if (!optionEls.length) {
+      optionEls = Array.from(document.querySelectorAll('.qselect, [ind], .choice-item, .option, .answer-item'));
     }
     if (!optionEls.length) {
       return { ok: false, reason: 'no-options-found' };
@@ -412,8 +460,9 @@ async function fillCurrentQuestion(page, question, answer) {
     // B. By letter A, B, C, D
     if (!chosen && answer.answer) {
       const ansLetter = String(answer.answer).trim().toUpperCase();
-      if (/^[A-D]$/.test(ansLetter)) {
-        const letterIdx = ansLetter.charCodeAt(0) - 65;
+      const m = ansLetter.match(/^[\[\(]?([A-D])[\]\)\.]?$/) || ansLetter.match(/^(?:đáp án|phương án)\s*([A-D])/i);
+      if (m) {
+        const letterIdx = m[1].toUpperCase().charCodeAt(0) - 65;
         if (letterIdx < optionEls.length) {
           chosen = optionEls[letterIdx];
           targetIdx = letterIdx;
@@ -424,7 +473,11 @@ async function fillCurrentQuestion(page, question, answer) {
     // C. By text content match
     if (!chosen && answer.answer) {
       const ansStr = String(answer.answer).trim().toLowerCase();
-      chosen = optionEls.find((el) => el.innerText.trim().toLowerCase().includes(ansStr));
+      chosen = optionEls.find((el) => {
+        const text = el.innerText.trim().toLowerCase();
+        return text === ansStr || text.includes(ansStr) || ansStr.includes(text);
+      });
+      if (chosen) targetIdx = optionEls.indexOf(chosen);
     }
 
     // D. Safe fallback: click option 0
@@ -433,7 +486,10 @@ async function fillCurrentQuestion(page, question, answer) {
       targetIdx = 0;
     }
 
+    const radio = chosen.querySelector('.qiradio, input[type=radio]') || chosen;
+    radio.click();
     chosen.click();
+    chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     return { ok: true, selectedIndex: targetIdx };
   }, { question, answer });
 }
@@ -450,14 +506,15 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
       const chips = document.querySelectorAll('.tw-olm-chip-question');
       if (chips[i] && !chips[i].classList.contains('tw-selected')) chips[i].click();
     }, index);
-    await H.sleep(H.randInt(150, 250));
+    await H.sleep(H.randInt(300, 450));
     const question = await scanCurrentQuestion(page, index, homework.subject, log);
     question.scanStatus = question.text || question.imageBase64 ? 'scanned' : 'unresolved';
     questions.push(question);
     emit?.('scan-progress', { index, completed: index + 1, total });
     if (log) {
       const qDesc = String(question.text || '').replace(/\s+/g, ' ').slice(0, 45);
-      log('info', `📋 Đã quét Câu ${index + 1}/${total}: "${qDesc || (question.hasImage ? 'Hình ảnh' : 'Trắc nghiệm')}"`);
+      const optDesc = (question.options || []).map((o, idx) => `${String.fromCharCode(65 + idx)}. ${o}`).join(' | ');
+      log('info', `📋 Đã quét Câu ${index + 1}/${total}: "${qDesc || (question.hasImage ? 'Hình ảnh' : 'Trắc nghiệm')}"${optDesc ? ` [4 đáp án: ${optDesc}]` : ''}`);
     }
   }
   if (log) log('info', `Đã nạp xong toàn bộ ${questions.length}/${total} câu hỏi.`);
@@ -503,7 +560,8 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
 
         for (const answer of solved) {
           answers.set(answer.id, answer);
-          const ansText = answer.answer || (answer.correctIndex >= 0 ? `Đáp án ${String.fromCharCode(65 + answer.correctIndex)}` : 'Đã có đáp án');
+          const optLetter = answer.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + answer.correctIndex)}]` : '';
+          const ansText = optLetter ? `${optLetter} ${answer.answer || ''}` : (answer.answer || 'Đã có đáp án');
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
           const matchedQ = batch.find((b) => b.id === answer.id) || q;
           if (log) {
@@ -516,7 +574,8 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
           try {
             const singleAns = await answerEngine.solveQuestion(singleQ, { onLog: (lvl, msg) => log?.(lvl, msg) });
             answers.set(singleQ.id, { id: singleQ.id, ...singleAns });
-            const sAns = singleAns.answer || (singleAns.correctIndex >= 0 ? `Đáp án ${String.fromCharCode(65 + singleAns.correctIndex)}` : 'Đã có đáp án');
+            const optLetter = singleAns.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + singleAns.correctIndex)}]` : '';
+            const sAns = optLetter ? `${optLetter} ${singleAns.answer || ''}` : (singleAns.answer || 'Đã có đáp án');
             if (log) log('success', `✔ Câu ${singleQ.index + 1} -> ${sAns}`);
           } catch (fallbackErr) {
             answers.set(singleQ.id, { id: singleQ.id, error: fallbackErr.message, correctIndex: -1, answer: '' });
@@ -581,10 +640,9 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
     } else {
       filled++;
       questionStatuses.set(question.id, 'filled');
-      if (log) {
-        const chosenText = planned.answer || (planned.correctIndex >= 0 ? `Đáp án ${String.fromCharCode(65 + planned.correctIndex)}` : 'Đã chọn');
-        log('info', `✍ Đã điền Câu ${question.index + 1}/${questions.length}: [${chosenText}]`);
-      }
+        const optLetter = planned.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + planned.correctIndex)}]` : '';
+        const chosenText = optLetter ? `${optLetter} ${planned.answer || ''}` : (planned.answer || 'Đã chọn');
+        log('info', `✍ Đã điền Câu ${question.index + 1}/${questions.length}: ${chosenText}`);
     }
 
     // Click #btn-done ("Kiểm tra đáp án" / "Lưu đáp án" trên OLM)
@@ -737,14 +795,16 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
 
     questions.push(question);
     const qDesc = String(question.text || '').replace(/\s+/g, ' ').slice(0, 50);
-    if (log) log('info', `⏳ Đang xử lý Câu ${step + 1}: "${qDesc || (question.imageBase64 ? 'Xem hình ảnh' : '')}"...`);
+    const optDesc = (question.options || []).map((o, idx) => `${String.fromCharCode(65 + idx)}. ${o}`).join(' | ');
+    if (log) log('info', `⏳ Đang xử lý Câu ${step + 1}: "${qDesc || (question.imageBase64 ? 'Xem hình ảnh' : '')}"${optDesc ? ` [4 đáp án: ${optDesc}]` : ''}`);
     emit?.('scan-progress', { completed: step + 1, total: step + 1 });
 
     // 3. Solve question with AI
     let answer;
     try {
       answer = await answerEngine.solveQuestion(question, { onLog: (lvl, msg) => log?.(lvl, msg) });
-      const ansText = answer.answer || (answer.correctIndex >= 0 ? `Đáp án ${String.fromCharCode(65 + answer.correctIndex)}` : 'Đã có đáp án');
+      const optLetter = answer.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + answer.correctIndex)}]` : '';
+      const ansText = optLetter ? `${optLetter} ${answer.answer || ''}` : (answer.answer || 'Đã có đáp án');
       if (log) log('success', `✔ Câu ${step + 1} -> ${ansText}`);
     } catch (err) {
       if (log) log('warn', `⚠️ Câu ${step + 1} gặp lỗi (${err.message}), chọn mặc định`);
@@ -799,8 +859,8 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
 
     // 8. Wait for next question
     let advancedToNext = false;
-    for (let w = 0; w < 8; w++) {
-      await H.sleep(150);
+    for (let w = 0; w < 16; w++) {
+      await H.sleep(200);
 
       const checkState = await page.evaluate(() => {
         const text = document.body.innerText || '';
@@ -1014,7 +1074,19 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       }
     }
 
-    // 3. Kiểm tra xem có chip câu hỏi trắc nghiệm hiện đại không (.tw-olm-chip-question)
+    // 3. Kiểm tra xem có phải là bài luyện tập theo chủ đề không (/chu-de/ hoặc có nút "Kiểm tra đáp án")
+    const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
+    const hasCheckBtn = await page.evaluate(() => {
+      const allBtns = Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button]'));
+      return allBtns.some((b) => /kiểm tra đáp án/i.test(b.innerText || b.value || ''));
+    });
+
+    if (isChuDeUrl || hasCheckBtn) {
+      if (log) log('info', 'Phát hiện bài luyện tập theo chủ đề (từng câu một) -> Giải theo luồng Flow Practice...');
+      return await solveFlowPractice(page, { homework, config, log, emit, signal });
+    }
+
+    // 4. Kiểm tra xem có chip câu hỏi trắc nghiệm hiện đại không (.tw-olm-chip-question)
     let chipsCount = 0;
     try {
       await page.waitForSelector('.tw-olm-chip-question', { timeout: 3500 });
@@ -1028,21 +1100,17 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       return await solveModernQuiz(page, { homework, config, log, emit, signal });
     }
 
-    // B. Check if this is the modern OLM step-by-step flow practice interface
+    // 5. Check if this is the modern OLM step-by-step flow practice interface
     const isFlowPractice = await page.evaluate(() => {
       const root = document.querySelector('default-root');
       const hasQuizElement = !!(
         root?.shadowRoot?.querySelector('type-quiz-x-mobile, type-quiz-x, type-paragraph, type-fill-me, type-true-fasle') ||
         document.querySelector('type-quiz-x-mobile, type-quiz-x, #question-container, .question-container')
       );
-      const hasCheckBtn = Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button]')).some((b) =>
-        /kiểm tra đáp án|trả lời|tiếp tục|tiếp/i.test(b.innerText || b.value || '')
-      );
-      return !!(root || hasQuizElement || hasCheckBtn);
+      return !!(root || hasQuizElement);
     });
 
-    const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
-    if (isFlowPractice || isChuDeUrl) {
+    if (isFlowPractice) {
       return await solveFlowPractice(page, { homework, config, log, emit, signal });
     }
 
@@ -1088,4 +1156,4 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
   }
 }
 
-module.exports = { isAvailable, launch, login, solveHomework, solveFlowPractice };
+module.exports = { isAvailable, launch, login, solveHomework, solveFlowPractice, scanCurrentQuestion, fillCurrentQuestion };

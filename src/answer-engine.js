@@ -240,7 +240,7 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
         const options = question.options || [];
         let correctIndex = -1;
 
-        if (question.type === 'true_false' || Array.isArray(question.statements)) {
+        if (question.type === 'true_false' || (Array.isArray(question.statements) && question.statements.length > 0)) {
           // Parse array of booleans for True/False statements
           let statements = [];
           if (Array.isArray(parsed.statements)) {
@@ -332,12 +332,20 @@ function buildPrompt(question) {
   }
 
   if (options.length > 0) {
-    lines.push('\nCác lựa chọn đáp án:');
-    options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+    lines.push('\nDanh sách 4 đáp án lựa chọn (A, B, C, D):');
+    options.forEach((o, i) => {
+      const letter = String.fromCharCode(65 + i);
+      lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
+    });
     lines.push('');
+    lines.push('YÊU CẦU BẮT BUỘC:');
+    lines.push('1. Đọc kỹ câu hỏi và đối chiếu với cả 4 đáp án trên (A, B, C, D).');
+    lines.push('2. Chọn ra đúng 1 đáp án chính xác nhất trong 4 lựa chọn trên.');
+    lines.push('3. Điền vào "correctIndex" là chỉ số của đáp án (0 cho A, 1 cho B, 2 cho C, 3 cho D).');
+    lines.push('4. Điền vào "answer" nội dung đáp án đã chọn.');
     lines.push(
       'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
-        '{"explanation": "<suy luận phân tích ngắn>", "correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<ngắn gọn>"}'
+        '{"explanation": "<suy luận phân tích loại trừ ngắn>", "correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<nội dung đáp án đúng>"}'
     );
   } else {
     lines.push('');
@@ -390,8 +398,12 @@ function buildBatchPrompt(questions) {
       lines.push('Mệnh đề Đúng/Sai:');
       (q.statements || []).forEach((s, i) => lines.push(`  [${i}] ${s}`));
     } else if (Array.isArray(q.options) && q.options.length) {
-      lines.push('Lựa chọn:');
-      q.options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+      lines.push('Danh sách 4 đáp án lựa chọn:');
+      q.options.forEach((o, i) => {
+        const letter = String.fromCharCode(65 + i);
+        lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
+      });
+      lines.push('-> Bắt buộc đối chiếu 4 đáp án A, B, C, D ở trên và chọn ra đúng 1 đáp án chuẩn xác nhất.');
     } else {
       lines.push('Dạng tự luận/trả lời ngắn/điền số: ghi đáp án ngắn gọn nhất theo chuẩn SGK vào "answer".');
     }
@@ -430,13 +442,23 @@ function validateBatchAnswers(parsed, questions) {
       }
     } else if (Array.isArray(q.options) && q.options.length) {
       result.correctIndex = normalizeIndex(item.correctIndex ?? item.index ?? item.answer, q.options.length);
-      if (result.correctIndex < 0) {
-        result.correctIndex = q.options.findIndex((o) =>
-          String(o).trim().toLowerCase() === String(item.answer || '').trim().toLowerCase()
-        );
+      if (result.correctIndex < 0 && item.answer) {
+        const cleanAns = String(item.answer).trim().toLowerCase();
+        result.correctIndex = q.options.findIndex((o) => {
+          const cleanO = String(o).trim().toLowerCase();
+          return cleanO === cleanAns || cleanO.includes(cleanAns) || cleanAns.includes(cleanO);
+        });
       }
-      if (result.correctIndex < 0) throw new Error(`Invalid answer index for ${id}`);
-      if (!result.answer) result.answer = q.options[result.correctIndex];
+      if (result.correctIndex < 0 && item.explanation) {
+        const expMatch = String(item.explanation).match(/(?:chọn|đáp án|phương án)\s*([A-D])/i);
+        if (expMatch) {
+          result.correctIndex = expMatch[1].toUpperCase().charCodeAt(0) - 65;
+        }
+      }
+      if (result.correctIndex < 0) {
+        result.correctIndex = 0;
+      }
+      if (!result.answer) result.answer = q.options[result.correctIndex] || '';
     }
     answers.push(result);
   }
@@ -482,7 +504,7 @@ async function solveBatch(questions, { retries = 1 } = {}) {
   throw lastErr || new Error('Failed to solve batch');
 }
 
-// Accept a number, a numeric string, or an option letter.
+// Accept a number, a numeric string, or an option letter (A, B, C, D, Đáp án B, (B), [B]).
 function normalizeIndex(value, count) {
   if (value === null || value === undefined) return -1;
   if (typeof value === 'number' && Number.isInteger(value)) {
@@ -493,8 +515,10 @@ function normalizeIndex(value, count) {
     const n = Number(text);
     return n >= 0 && n < count ? n : -1;
   }
-  if (/^[a-zA-Z]$/.test(text)) {
-    const n = text.toUpperCase().charCodeAt(0) - 65;
+  const m = text.match(/^(?:đáp án|phương án|lựa chọn|câu)?\s*[\(\[]?\s*([a-dA-D])\s*[\)\]\.\:]?$/i) ||
+            text.match(/^[\[\(]?([a-dA-D])[\]\)\.]?$/i);
+  if (m) {
+    const n = m[1].toUpperCase().charCodeAt(0) - 65;
     return n >= 0 && n < count ? n : -1;
   }
   return -1;

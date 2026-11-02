@@ -665,27 +665,17 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
       break;
     }
 
-    // 2. Scan current question
-    let question = await scanCurrentQuestion(page, step, homework.subject, log);
-    if (!question.text && !question.imageBase64) {
-      await H.sleep(1500);
+    // 2. Scan current question with retries
+    let question = null;
+    for (let r = 0; r < 4; r++) {
       question = await scanCurrentQuestion(page, step, homework.subject, log);
+      if (question.text || question.imageBase64) break;
+      await H.sleep(1500);
     }
 
-    if (!question.text && !question.imageBase64) {
-      // Check if there is still a check or next button
-      const hasActiveControl = await page.evaluate(() => {
-        const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
-        const allBtns = [
-          ...Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')),
-          ...(root ? Array.from(root.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')) : [])
-        ];
-        return allBtns.some((b) => /kiểm tra đáp án|tiếp|câu tiếp|làm tiếp/i.test(b.innerText || b.value || ''));
-      });
-      if (!hasActiveControl) {
-        if (log) log('info', `Không còn câu hỏi tiếp theo, kết thúc bài tập.`);
-        break;
-      }
+    if (!question || (!question.text && !question.imageBase64)) {
+      if (log) log('info', `Không còn câu hỏi tiếp theo, hoàn tất bài tập.`);
+      break;
     }
 
     questions.push(question);
@@ -729,52 +719,67 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
     // 6. Check if done immediately after submit
     const doneAfterSubmit = await page.evaluate(() => {
       const text = document.body.innerText || '';
-      return /chúc mừng bạn đã hoàn thành|bạn đã đạt|kết quả luyện tập|luyện tập lại|chúc mừng bạn/i.test(text) &&
-             !/kiểm tra đáp án/i.test(text);
+      const modal = document.querySelector('.main-modal-v2, .swal2-container, .modal-finish, .modal-result');
+      return (/chúc mừng bạn đã hoàn thành|bạn đã đạt|kết quả luyện tập|luyện tập lại|chúc mừng bạn/i.test(text) && !/kiểm tra đáp án/i.test(text)) ||
+             !!(modal && /chúc mừng|kết quả|hoàn thành/i.test(modal.innerText));
     });
     if (doneAfterSubmit) {
       if (log) log('success', `🎉 Đã hoàn thành toàn bộ bài luyện tập!`);
       break;
     }
 
-    // 7. Click "Tiếp" button to advance to next question
-    let clickedNext = await page.evaluate(() => {
+    // 7. Click "Tiếp" button if present (appears when answered wrongly or on manual advance)
+    await page.evaluate(() => {
       const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
       const allBtns = [
         ...Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')),
         ...(root ? Array.from(root.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')) : [])
       ];
       const nextBtn = allBtns.find((b) => /^(tiếp|câu tiếp|làm tiếp|tiếp tục|next)$/i.test((b.innerText || b.value || '').trim()));
-      if (nextBtn) {
-        nextBtn.click();
-        return true;
-      }
-      return false;
+      if (nextBtn) nextBtn.click();
     });
 
-    if (!clickedNext) {
-      await H.sleep(1500);
-      clickedNext = await page.evaluate(() => {
-        const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
-        const allBtns = [
-          ...Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')),
-          ...(root ? Array.from(root.querySelectorAll('button, a.btn, input[type=submit], div[role=button], span')) : [])
-        ];
+    // 8. Wait for next question (OLM auto-advances on correct answers, or advances after "Tiếp")
+    let advancedToNext = false;
+    for (let w = 0; w < 10; w++) {
+      await H.sleep(1000);
+
+      const checkState = await page.evaluate(() => {
+        const text = document.body.innerText || '';
+        const modal = document.querySelector('.main-modal-v2, .swal2-container, .modal-finish, .modal-result');
+        const isFinished = /chúc mừng bạn đã hoàn thành|bạn đã đạt|kết quả luyện tập|luyện tập lại|chúc mừng bạn/i.test(text) &&
+                           !/kiểm tra đáp án/i.test(text);
+
+        const allBtns = Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button]'));
+        const hasCheckBtn = allBtns.some((b) => /kiểm tra đáp án|nop bai|nộp bài|trả lời/i.test(b.innerText || b.value || ''));
+
+        // If next button still present, click it
         const nextBtn = allBtns.find((b) => /^(tiếp|câu tiếp|làm tiếp|tiếp tục|next)$/i.test((b.innerText || b.value || '').trim()));
-        if (nextBtn) {
-          nextBtn.click();
-          return true;
-        }
-        return false;
+        if (nextBtn) nextBtn.click();
+
+        return {
+          isFinished: isFinished || !!(modal && /chúc mừng|kết quả|hoàn thành/i.test(modal.innerText)),
+          hasCheckBtn
+        };
       });
+
+      if (checkState.isFinished) {
+        if (log) log('success', `🎉 Đã hoàn thành toàn bộ bài luyện tập!`);
+        advancedToNext = false;
+        break;
+      }
+
+      if (checkState.hasCheckBtn) {
+        advancedToNext = true;
+        break;
+      }
     }
 
-    if (!clickedNext) {
-      if (log) log('info', `Không còn câu hỏi tiếp theo, kết thúc bài tập.`);
+    if (!advancedToNext) {
+      if (log) log('info', `Không còn câu hỏi tiếp theo, hoàn tất bài tập.`);
       break;
     }
 
-    await H.sleep(H.randInt(1200, 2000));
     step++;
   }
 

@@ -350,6 +350,52 @@ app.post('/api/admin/licenses/import', requireAdmin, (req, res) => {
   }
 });
 
+// --- Proxy Management Endpoints ---
+const proxyManager = require('./src/proxy');
+
+app.get('/api/admin/proxy', requireAdmin, (req, res) => {
+  const current = proxyManager.getRuntimeProxy();
+  const parsed = proxyManager.parseProxy();
+  res.json({
+    ok: true,
+    enabled: !!current,
+    proxy: current ? current.replace(/:[^:@]+@/, ':****@') : null,
+    info: parsed ? { protocol: parsed.protocol, host: parsed.host, port: parsed.port } : null,
+  });
+});
+
+app.post('/api/admin/proxy', requireAdmin, async (req, res) => {
+  const { proxyUrl } = req.body || {};
+  const trimmed = proxyUrl ? String(proxyUrl).trim() : '';
+
+  if (!trimmed) {
+    proxyManager.saveStoredProxy('');
+    return res.json({ ok: true, message: 'Đã tắt sử dụng Proxy' });
+  }
+
+  try {
+    const testResult = await proxyManager.testProxy(trimmed);
+    proxyManager.saveStoredProxy(trimmed);
+    res.json({
+      ok: true,
+      message: `Đã kết nối và lưu Proxy thành công! IP: ${testResult.ip} (${testResult.latency}ms)`,
+      ...testResult,
+    });
+  } catch (err) {
+    res.status(400).json({ error: `Kiểm tra proxy thất bại: ${err.message}` });
+  }
+});
+
+app.post('/api/admin/proxy/test', requireAdmin, async (req, res) => {
+  const { proxyUrl } = req.body || {};
+  try {
+    const result = await proxyManager.testProxy(proxyUrl);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 
 // Start a run over the selected homeworks.
 app.post('/api/run', requireLicense, requireSession, async (req, res) => {

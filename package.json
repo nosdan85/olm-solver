@@ -26,6 +26,8 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "express-rate-limit": "^7.4.1",
+    "https-proxy-agent": "^7.0.6",
+    "socks-proxy-agent": "^8.0.5",
     "tough-cookie": "^4.1.4"
   },
   "optionalDependencies": {

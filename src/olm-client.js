@@ -43,7 +43,12 @@ function baseHeaders(ua) {
 class OlmClient {
   constructor(cookieJar, ua) {
     this.jar = cookieJar || new CookieJar();
-    this.http = wrapper(axios.create({ jar: this.jar, withCredentials: true }));
+    const proxyAgent = require('./proxy').getAxiosAgent();
+    this.http = wrapper(axios.create({
+      jar: this.jar,
+      withCredentials: true,
+      ...(proxyAgent ? { httpsAgent: proxyAgent, httpAgent: proxyAgent } : {}),
+    }));
     this.ua = ua || randomUA();
     this.baseUrl = (process.env.OLM_BASE_URL || 'https://olm.vn').replace(/\/+$/, '');
     this.loginPageUrl = process.env.OLM_LOGIN_URL || `${this.baseUrl}/dangnhap`;

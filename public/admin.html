@@ -374,6 +374,30 @@
         </div>
       </div>
 
+      <!-- Proxy Settings Card -->
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-title">
+          <span>🌐 Cấu Hình Proxy Dân Cư (Vượt Cloudflare OLM)</span>
+          <span id="proxy-status-pill" class="pill pill-unused">Đang kiểm tra...</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px; line-height: 1.5;">
+          Gắn Proxy dân cư (Việt Nam) giúp server Render đổi sang IP hộ gia đình, tự động đăng nhập tài khoản OLM cho học sinh mà <b>không bao giờ bị dính Cloudflare</b>.
+        </p>
+
+        <form id="form-proxy" onsubmit="handleSaveProxy(event)">
+          <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="flex: 1; min-width: 280px; margin-bottom: 0;">
+              <label>Chuỗi Proxy (HTTP / SOCKS5):</label>
+              <input type="text" id="in-proxy-url" placeholder="Ví dụ: http://user:pass@ip:port hoặc ip:port:user:pass">
+            </div>
+            <button type="button" class="btn btn-secondary" onclick="handleTestProxy()" style="height: 44px;">⚡ Kiểm tra Proxy</button>
+            <button type="submit" class="btn btn-primary" style="height: 44px;">💾 Lưu Cấu Hình</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="handleClearProxy()" style="height: 44px;">Tắt Proxy</button>
+          </div>
+        </form>
+        <div id="proxy-result" style="margin-top: 12px; font-size: 13px; display: none; padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.3);"></div>
+      </div>
+
       <!-- License List Card -->
       <div class="card">
         <div class="card-title">
@@ -429,6 +453,7 @@
         document.getElementById('view-dashboard').style.display = 'block';
         document.getElementById('btn-logout').style.display = 'inline-flex';
         loadLicenses();
+        loadProxy();
       } else {
         document.getElementById('view-login').style.display = 'block';
         document.getElementById('view-dashboard').style.display = 'none';
@@ -472,6 +497,97 @@
         throw new Error('Hết phiên quản trị hoặc sai mật khẩu');
       }
       return res.json();
+    }
+
+    async function loadProxy() {
+      try {
+        const data = await adminFetch('/api/admin/proxy');
+        const pill = document.getElementById('proxy-status-pill');
+        const input = document.getElementById('in-proxy-url');
+        if (data.enabled) {
+          pill.className = 'pill pill-active';
+          pill.textContent = `Đang bật (${data.info?.host || 'Active'})`;
+          input.value = data.proxy || '';
+        } else {
+          pill.className = 'pill pill-unused';
+          pill.textContent = 'Chưa bật';
+          input.value = '';
+        }
+      } catch (err) {
+        console.error('loadProxy error:', err);
+      }
+    }
+
+    async function handleTestProxy() {
+      const url = document.getElementById('in-proxy-url').value.trim();
+      const resBox = document.getElementById('proxy-result');
+      if (!url) {
+        alert('Vui lòng nhập chuỗi Proxy để kiểm tra.');
+        return;
+      }
+      resBox.style.display = 'block';
+      resBox.style.color = '#60a5fa';
+      resBox.textContent = '⏳ Đang kiểm tra kết nối tới Proxy...';
+
+      try {
+        const res = await adminFetch('/api/admin/proxy/test', {
+          method: 'POST',
+          body: JSON.stringify({ proxyUrl: url })
+        });
+        if (res.ok) {
+          resBox.style.color = '#10b981';
+          resBox.textContent = `✅ Proxy hoạt động rất tốt! IP kết nối ra ngoài: ${res.ip} (Độ trễ: ${res.latency}ms)`;
+        } else {
+          throw new Error(res.error || 'Proxy không hoạt động');
+        }
+      } catch (err) {
+        resBox.style.color = '#ef4444';
+        resBox.textContent = `❌ ${err.message}`;
+      }
+    }
+
+    async function handleSaveProxy(e) {
+      e.preventDefault();
+      const url = document.getElementById('in-proxy-url').value.trim();
+      const resBox = document.getElementById('proxy-result');
+      resBox.style.display = 'block';
+      resBox.style.color = '#60a5fa';
+      resBox.textContent = '⏳ Đang kiểm tra và lưu Proxy...';
+
+      try {
+        const res = await adminFetch('/api/admin/proxy', {
+          method: 'POST',
+          body: JSON.stringify({ proxyUrl: url })
+        });
+        if (res.ok) {
+          resBox.style.color = '#10b981';
+          resBox.textContent = res.message || '✅ Đã lưu cấu hình Proxy thành công!';
+          loadProxy();
+        } else {
+          throw new Error(res.error || 'Không thể lưu proxy');
+        }
+      } catch (err) {
+        resBox.style.color = '#ef4444';
+        resBox.textContent = `❌ ${err.message}`;
+      }
+    }
+
+    async function handleClearProxy() {
+      if (!confirm('Bạn có chắc chắn muốn tắt sử dụng Proxy?')) return;
+      try {
+        await adminFetch('/api/admin/proxy', {
+          method: 'POST',
+          body: JSON.stringify({ proxyUrl: '' })
+        });
+        document.getElementById('in-proxy-url').value = '';
+        const resBox = document.getElementById('proxy-result');
+        resBox.style.display = 'block';
+        resBox.style.color = '#9ca3af';
+        resBox.textContent = 'ℹ️ Đã tắt Proxy. Hệ thống sẽ kết nối trực tiếp.';
+        loadProxy();
+      } catch (err) {
+        alert(err.message);
+      }
     }
 
     async function exportLicenses() {

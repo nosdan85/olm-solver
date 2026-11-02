@@ -23,3 +23,5 @@ services:
         generateValue: true
       - key: PORT
         value: "3000"
+      - key: PROXY_URL
+        value: ""

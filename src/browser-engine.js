@@ -39,6 +39,8 @@ async function launch() {
   const pptr = loadPuppeteer();
   if (!pptr) throw new Error('Puppeteer is not installed');
 
+  const proxy = require('./proxy').parseProxy();
+
   const headless = String(process.env.PUPPETEER_HEADLESS || 'true').toLowerCase() !== 'false';
   const args = [
     '--no-sandbox',
@@ -48,6 +50,7 @@ async function launch() {
     '--no-first-run',
     '--no-default-browser-check',
     '--lang=vi-VN,vi',
+    ...(proxy ? [`--proxy-server=${proxy.serverArg}`] : []),
   ];
 
   const opts = { headless, args, slowMo: Number(process.env.PUPPETEER_SLOWMO || 0) };
@@ -72,12 +75,28 @@ async function launch() {
   }
 
   const browser = await pptr.launch(opts);
+
+  if (proxy && proxy.username && proxy.password) {
+    browser.on('targetcreated', async (target) => {
+      const p = await target.page().catch(() => null);
+      if (p) {
+        await p.authenticate({ username: proxy.username, password: proxy.password }).catch(() => {});
+      }
+    });
+  }
+
   return browser;
 }
 
 // Login through the real form.
 async function login(browser, { username, password, loginUrl, log }) {
   const page = await browser.newPage();
+
+  const proxy = require('./proxy').parseProxy();
+  if (proxy && proxy.username && proxy.password) {
+    await page.authenticate({ username: proxy.username, password: proxy.password }).catch(() => {});
+  }
+
   await page.setViewport({ width: 1366, height: 900, deviceScaleFactor: 1 });
   await page.setUserAgent(H.pick(require('./olm-client').USER_AGENTS));
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8' });

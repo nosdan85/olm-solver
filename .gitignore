@@ -6,3 +6,4 @@ data/sessions.json
 screenshots/
 cloudflared.exe
 data/tunnel.json
+scratch/

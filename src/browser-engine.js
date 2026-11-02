@@ -106,7 +106,21 @@ async function login(browser, { username, password, loginUrl, log }) {
   await page.setUserAgent(H.pick(require('./olm-client').USER_AGENTS));
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8' });
 
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+  let navErr = null;
+  try {
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  } catch (err) {
+    navErr = err;
+  }
+
+  if (navErr) {
+    const errMsg = navErr.message || '';
+    await page.close().catch(() => {});
+    if (/ERR_PROXY|proxy/i.test(errMsg)) {
+      throw new Error('Lỗi kết nối Proxy (Proxy hiện không hoạt động hoặc bị từ chối kết nối). Vui lòng tắt Proxy trong cài đặt hoặc đổi Proxy mới.');
+    }
+    throw new Error(`Không thể kết nối đến trang đăng nhập OLM (${errMsg}). Vui lòng kiểm tra lại mạng.`);
+  }
 
   // Wait up to 20s for login inputs to be rendered (allowing Cloudflare Turnstile or SPA scripts to mount)
   try {
@@ -142,13 +156,18 @@ async function login(browser, { username, password, loginUrl, log }) {
   // Find the username/password inputs from the live DOM.
   const selectors = await page.evaluate(() => {
     const inputs = Array.from(document.querySelectorAll('input'));
-    const pw = inputs.find((i) => (i.type || '').toLowerCase() === 'password');
+    const pw = inputs.find((i) => i.id === 'password' || i.name === 'password' || (i.type || '').toLowerCase() === 'password');
     const txt = inputs.find(
-      (i) => (i.type || '').toLowerCase() !== 'password' && (i.type || '').toLowerCase() !== 'hidden' && i.type !== 'checkbox'
+      (i) => i.id === 'username' || i.name === 'username' || (
+        (i.type || '').toLowerCase() !== 'password' &&
+        (i.type || '').toLowerCase() !== 'hidden' &&
+        i.type !== 'checkbox' &&
+        (i.offsetWidth > 0 || i.offsetHeight > 0)
+      )
     );
     return {
-      username: txt ? (txt.name || txt.id || '') : '',
-      password: pw ? (pw.name || pw.id || '') : '',
+      username: txt ? (txt.name || txt.id || 'username') : '',
+      password: pw ? (pw.name || pw.id || 'password') : '',
     };
   });
 
@@ -247,27 +266,15 @@ async function login(browser, { username, password, loginUrl, log }) {
 // Read the currently selected modern OLM question without mutating its controls.
 async function scanCurrentQuestion(page, index, subject, log) {
   const data = await page.evaluate((idx) => {
-    const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
-    if (!root) return { type: 'choice', text: '', options: [] };
+    const defRoot = document.querySelector('default-root');
+    const root = defRoot?.shadowRoot || defRoot || document;
 
-    // 1. Essay / Paragraph (<type-paragraph>)
-    const typePara = root.querySelector('type-paragraph')?.shadowRoot || root.querySelector('type-paragraph');
-    if (typePara) {
-      const p = typePara.querySelector('#paragraph');
-      let text = p ? p.innerText.trim() : '';
-      text = text.replace(/Bài làm[\s\S]*$/i, '').trim();
-      return {
-        type: 'short_answer',
-        text,
-        options: []
-      };
-    }
-
-    // 2. Fill-in-the-blank / Short answer (<type-fill-me>)
-    const fillMe = root.querySelector('type-fill-me')?.shadowRoot || root.querySelector('type-fill-me');
+    // 1. Fill-in-the-blank / Short answer (<type-fill-me-mobile>, <type-fill-me>)
+    const fillMe = root.querySelector('type-fill-me-mobile, type-fill-me')?.shadowRoot ||
+                   root.querySelector('type-fill-me-mobile, type-fill-me');
     if (fillMe) {
       const p = fillMe.querySelector('#fillme-input, .question-content') || fillMe;
-      let text = p ? p.innerText.trim() : '';
+      let text = (p ? p.innerText : fillMe.innerText || '').trim();
       text = text.replace(/Bài làm[\s\S]*$/i, '').trim();
       return {
         type: 'short_answer',
@@ -276,11 +283,28 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 3. True / False (<type-true-fasle>)
-    const tf = root.querySelector('type-true-fasle')?.shadowRoot || root.querySelector('type-true-fasle');
+    // 2. Essay / Paragraph (<type-paragraph-mobile>, <type-paragraph>)
+    const typePara = root.querySelector('type-paragraph-mobile, type-paragraph')?.shadowRoot ||
+                     root.querySelector('type-paragraph-mobile, type-paragraph');
+    if (typePara) {
+      const p = typePara.querySelector('#paragraph, .question-content') || typePara;
+      let text = (p ? p.innerText : typePara.innerText || '').trim();
+      text = text.replace(/Bài làm[\s\S]*$/i, '').trim();
+      return {
+        type: 'short_answer',
+        text,
+        options: []
+      };
+    }
+
+    // 3. True / False table (<type-true-false-mobile>, <type-true-fasle>, <type-tf-mobile>)
+    const tf = root.querySelector('type-true-false-mobile, type-true-fasle, type-tf-mobile, type-true-false')?.shadowRoot ||
+               root.querySelector('type-true-false-mobile, type-true-fasle, type-tf-mobile, type-true-false');
     if (tf) {
-      const content = tf.querySelector('.question-content');
-      const rows = Array.from(tf.querySelectorAll('.tf-row')).map((row) => (row.innerText || '').replace(/[ĐS\s]+$/, '').trim()).filter(Boolean);
+      const content = tf.querySelector('.question-content, #paragraph, .question') || tf;
+      const rows = Array.from(tf.querySelectorAll('.tf-row, tr, [class*="statement"]'))
+        .map((row) => (row.innerText || '').replace(/[ĐS\s]+$/, '').trim())
+        .filter(Boolean);
       return {
         type: 'true_false',
         text: (content?.innerText || '').trim(),
@@ -288,7 +312,27 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 4. General Short Answer / Textarea inside root
+    // 4. Multi-choice / "Chọn những câu đúng" (<type-quiz-multi-mobile>, <type-quiz-multi>)
+    const multiQuiz = root.querySelector('type-quiz-multi-mobile, type-quiz-multi')?.shadowRoot ||
+                      root.querySelector('type-quiz-multi-mobile, type-quiz-multi');
+    if (multiQuiz) {
+      const qContent = multiQuiz.querySelector('.question-content, #paragraph, .question') || multiQuiz;
+      const text = (qContent?.innerText || '').trim();
+      let optionEls = Array.from(multiQuiz.querySelectorAll('.qselect, [ind], .choice-item, .option'));
+      const options = optionEls.map((el) => {
+        const sign = el.querySelector('.qsign, .content, .option-text, label');
+        let t = (sign ? sign.innerText : el.innerText) || '';
+        t = t.replace(/^[\s\u200B\xA0]+|[\s\u200B\xA0]+$/g, '');
+        return t.replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim();
+      }).filter(Boolean);
+      return {
+        type: 'multi_choice',
+        text,
+        options
+      };
+    }
+
+    // 5. Direct Textarea / Input inside root
     const directTextarea = root.querySelector('textarea.typing-para, .text-para, textarea');
     if (directTextarea) {
       const qContent = root.querySelector('.question-content, #paragraph, .question');
@@ -299,9 +343,9 @@ async function scanCurrentQuestion(page, index, subject, log) {
       };
     }
 
-    // 5. Choice (<type-quiz-x>, <type-quiz-multi>, <type-quiz-x-mobile>, or general)
-    const quiz = root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz')?.shadowRoot ||
-                 root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
+    // 6. Single Choice (<type-quiz-x-mobile>, <type-quiz-x>, or general)
+    const quiz = root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz')?.shadowRoot ||
+                 root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz') || root;
     const qContent = quiz.querySelector('.question-content, #paragraph, .question') ||
                      root.querySelector('.question-content, #paragraph, .question') ||
                      document.querySelector('.question-content, #paragraph, .question');
@@ -335,14 +379,13 @@ async function scanCurrentQuestion(page, index, subject, log) {
   }, index);
 
   // If choice question but options are empty, poll up to 1.5s for Lit components to finish rendering
-  if (data?.type === 'choice' && (!data.options || data.options.length === 0)) {
+  if ((data?.type === 'choice' || data?.type === 'multi_choice') && (!data.options || data.options.length === 0)) {
     for (let r = 0; r < 6; r++) {
       await H.sleep(250);
       const pollOpts = await page.evaluate(() => {
-        const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
-        if (!root) return [];
-        const quiz = root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz')?.shadowRoot ||
-                     root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
+        const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root') || document;
+        const quiz = root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz-multi-mobile, type-quiz-multi')?.shadowRoot ||
+                     root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz-multi-mobile, type-quiz-multi') || root;
         let els = Array.from(quiz.querySelectorAll('.qselect'));
         if (!els.length) els = Array.from(quiz.querySelectorAll('[ind], .choice-item, .option, .answer-item'));
         if (!els.length && root !== quiz) els = Array.from(root.querySelectorAll('.qselect, [ind], .choice-item, .option'));
@@ -361,23 +404,49 @@ async function scanCurrentQuestion(page, index, subject, log) {
     }
   }
 
+  // Check if question has visual content (images, diagrams, latex formulas)
   const hasImage = await page.evaluate(() => {
-    const root = document.querySelector('default-root')?.shadowRoot;
-    const content = root?.querySelector('.question-content, #paragraph, #fillme-input') || document.querySelector('.question-content, .question');
+    const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root') || document;
+    const content = root.querySelector('type-fill-me-mobile, type-fill-me, type-quiz-x-mobile, type-quiz-multi-mobile, type-true-false-mobile, .question-content, #paragraph, #fillme-input') || document.querySelector('.question-content, .question');
     if (!content) return false;
-    const img = content.querySelector('img:not(.emoji):not(.icon), canvas');
+    const compRoot = content.shadowRoot || content;
+    const img = compRoot.querySelector('img:not(.emoji):not(.icon), canvas');
     if (img) return true;
-    const svgs = Array.from(content.querySelectorAll('svg')).filter((s) => {
+    const svgs = Array.from(compRoot.querySelectorAll('svg')).filter((s) => {
       const rect = s.getBoundingClientRect();
-      return rect.width > 60 && rect.height > 60;
+      return rect.width > 50 && rect.height > 50;
     });
     return svgs.length > 0;
   });
 
   let imageBase64 = null;
-  if (hasImage) {
-    if (log) log('info', `Câu ${index + 1}: xử lý sơ đồ / hình ảnh`);
-    imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+  // Always capture high-res question bounding box screenshot for visual questions or short answer
+  if (hasImage || data?.type === 'short_answer') {
+    if (log) log('info', `📸 Câu ${index + 1}: Chụp ảnh câu hỏi gửi AI Vision phân tích chi tiết...`);
+    try {
+      const box = await page.evaluate(() => {
+        const el = document.querySelector('default-root') || document.querySelector('.previewquiz, .card, #question-container, .main-content');
+        if (el) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 80 && r.height > 80) {
+            return {
+              x: Math.max(0, Math.floor(r.x)),
+              y: Math.max(0, Math.floor(r.y)),
+              width: Math.min(window.innerWidth, Math.ceil(r.width)),
+              height: Math.min(window.innerHeight, Math.ceil(r.height)),
+            };
+          }
+        }
+        return null;
+      });
+      if (box && box.width > 50 && box.height > 50) {
+        imageBase64 = await page.screenshot({ clip: box, encoding: 'base64', type: 'jpeg', quality: 85 });
+      } else {
+        imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 });
+      }
+    } catch {
+      imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+    }
   }
 
   return {
@@ -394,47 +463,97 @@ async function scanCurrentQuestion(page, index, subject, log) {
 }
 
 async function fillCurrentQuestion(page, question, answer) {
-  return page.evaluate(({ question, answer }) => {
-    const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
-    if (!root) return { ok: false, reason: 'no-default-root' };
+  // 1. Short Answer / Fill-me (<type-fill-me-mobile>, <type-paragraph-mobile>, input, textarea)
+  if (question.type === 'short_answer') {
+    let cleanVal = String(answer.answer || '').trim();
+    // If AI returns verbose answer for count questions (e.g. "Có 4 chất", "Đáp án là 4")
+    const numMatch = cleanVal.match(/^.*?(\d+(?:[.,]\d+)?)\s*(?:chất|chất thuộc|mệnh đề|phát biểu|gam|ml|lít)?$/i);
+    if (numMatch && !cleanVal.includes('+') && !cleanVal.includes('-') && !cleanVal.includes('/')) {
+      cleanVal = numMatch[1];
+    }
 
-    // 1. True / False
-    if (question.type === 'true_false') {
-      const tf = root.querySelector('type-true-fasle')?.shadowRoot || root.querySelector('type-true-fasle');
-      const rows = Array.from(tf?.querySelectorAll('.tf-row') || []);
+    const evalRes = await page.evaluate((val) => {
+      const defRoot = document.querySelector('default-root');
+      const root = defRoot?.shadowRoot || defRoot || document;
+      const fillComp = root.querySelector('type-fill-me-mobile, type-fill-me, type-paragraph-mobile, type-paragraph');
+      const compRoot = fillComp?.shadowRoot || fillComp || root;
+      const input = compRoot.querySelector('input[type="text"], input:not([type]), textarea.typing-para, textarea, input');
+      if (!input) return { ok: false, reason: 'short-answer-input-missing' };
+
+      input.scrollIntoView({ behavior: 'instant', block: 'center' });
+      input.focus();
+      input.value = val;
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      return { ok: true, val };
+    }, cleanVal);
+
+    if (evalRes.ok) {
+      // Type via puppeteer keyboard to guarantee virtual keyboard triggers
+      await page.keyboard.press('Backspace').catch(() => {});
+      await page.keyboard.type(cleanVal, { delay: 50 }).catch(() => {});
+    }
+    return evalRes;
+  }
+
+  // 2. True / False table (<type-true-false-mobile>, <type-true-fasle>)
+  if (question.type === 'true_false') {
+    return page.evaluate(({ answer }) => {
+      const defRoot = document.querySelector('default-root');
+      const root = defRoot?.shadowRoot || defRoot || document;
+      const tf = root.querySelector('type-true-false-mobile, type-true-fasle, type-tf-mobile, type-true-false');
+      const compRoot = tf?.shadowRoot || tf || root;
+      const rows = Array.from(compRoot.querySelectorAll('.tf-row, tr, [class*="statement"]'))
+        .filter(r => r.querySelectorAll('button, td, span, div, input').length >= 2);
+
+      const statements = Array.isArray(answer.statements) ? answer.statements : [true, true, true, true];
       rows.forEach((row, i) => {
-        const target = answer.statements?.[i];
-        const button = Array.from(row.querySelectorAll('button, td, span, div, input')).find((el) => {
-          const text = (el.innerText || el.value || '').trim();
-          return text === (target ? 'Đ' : 'S');
+        const isTrue = Boolean(statements[i] ?? true);
+        const targetText = isTrue ? 'Đ' : 'S';
+        const buttons = Array.from(row.querySelectorAll('button, td, span, div, input'));
+        const btn = buttons.find((el) => {
+          const t = (el.innerText || el.value || '').trim();
+          return t === targetText || (isTrue && /^đúng$/i.test(t)) || (!isTrue && /^sai$/i.test(t));
         });
-        if (button) button.click();
+        if (btn) {
+          btn.click();
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        }
       });
       return { ok: true };
-    }
+    }, { answer });
+  }
 
-    // 2. Short Answer / Essay / Fill-me (<type-paragraph>, <type-fill-me>, textarea, or input)
-    if (question.type === 'short_answer') {
-      const typePara = root.querySelector('type-paragraph')?.shadowRoot || root.querySelector('type-paragraph');
-      const fillMe = root.querySelector('type-fill-me')?.shadowRoot || root.querySelector('type-fill-me');
-      const input = fillMe?.querySelector('input') ||
-                    typePara?.querySelector('textarea.typing-para, .text-para, textarea') ||
-                    root.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"], input:not([type])') ||
-                    document.querySelector('textarea.typing-para, .text-para, textarea, input[type="text"], input:not([type])');
-      if (!input) return { ok: false, reason: 'short-answer-control-missing' };
-      
-      const value = String(answer.answer || '').trim();
-      input.focus();
-      input.value = value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
-      return { ok: true, value: input.value };
-    }
+  // 3. Multi-choice / "Chọn những câu đúng thôi" (<type-quiz-multi-mobile>)
+  if (question.type === 'multi_choice') {
+    return page.evaluate(({ answer }) => {
+      const defRoot = document.querySelector('default-root');
+      const root = defRoot?.shadowRoot || defRoot || document;
+      const quiz = root.querySelector('type-quiz-multi-mobile, type-quiz-multi, type-quiz-x-mobile, type-quiz-x');
+      const compRoot = quiz?.shadowRoot || quiz || root;
+      const optionEls = Array.from(compRoot.querySelectorAll('.qselect, [ind], .choice-item, .option'));
+      if (!optionEls.length) return { ok: false, reason: 'no-options-found' };
 
-    // 3. Multiple Choice
-    const quiz = root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz')?.shadowRoot ||
-                 root.querySelector('type-quiz-x, type-quiz-multi, type-quiz-x-mobile, type-quiz') || root;
+      const correctSet = new Set(Array.isArray(answer.correctIndices) ? answer.correctIndices : [0]);
+      optionEls.forEach((el, idx) => {
+        const shouldSelect = correctSet.has(idx);
+        const isSelected = el.classList.contains('tw-selected') || el.classList.contains('selected') || el.classList.contains('active') || !!el.querySelector('input:checked');
+        if (shouldSelect !== isSelected) {
+          el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          el.click();
+          el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        }
+      });
+      return { ok: true };
+    }, { answer });
+  }
+
+  // 4. Single Multiple Choice (<type-quiz-x-mobile>, <type-quiz-x>)
+  return page.evaluate(({ question, answer }) => {
+    const defRoot = document.querySelector('default-root');
+    const root = defRoot?.shadowRoot || defRoot || document;
+    const quiz = root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz-multi-mobile, type-quiz')?.shadowRoot ||
+                 root.querySelector('type-quiz-x-mobile, type-quiz-x, type-quiz-multi-mobile, type-quiz') || root;
     let optionEls = Array.from(quiz.querySelectorAll('.qselect'));
     if (!optionEls.length) {
       optionEls = Array.from(quiz.querySelectorAll('[ind], .choice-item, .option, .answer-item'));
@@ -486,10 +605,11 @@ async function fillCurrentQuestion(page, question, answer) {
       targetIdx = 0;
     }
 
+    chosen.scrollIntoView({ behavior: 'instant', block: 'center' });
     const radio = chosen.querySelector('.qiradio, input[type=radio]') || chosen;
     radio.click();
     chosen.click();
-    chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true }));
     return { ok: true, selectedIndex: targetIdx };
   }, { question, answer });
 }
@@ -675,22 +795,56 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
     return false;
   });
 
+  let scoreAchieved = null;
+  let scoreText = '';
   if (submitClicked) {
     if (log) log('info', 'Đã nhấn nút "Xác nhận nộp bài"');
     await H.sleep(1500);
 
     // Confirm modal if any
     await page.evaluate(() => {
-      const confirmBtn = Array.from(document.querySelectorAll('button, a.btn')).find(
+      const popupBtn = document.querySelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm, button.btn-primary');
+      if (popupBtn) {
+        popupBtn.click();
+        return;
+      }
+      const confirmBtn = Array.from(document.querySelectorAll('button, a.btn, input[type=button]')).find(
         (b) =>
-          /đồng ý|xác nhận|nộp|ok/i.test(b.innerText || '') &&
+          /đồng ý|xác nhận|nộp|ok|có/i.test(b.innerText || b.value || '') &&
           !b.classList.contains('btn-submit-cate')
       );
       if (confirmBtn) confirmBtn.click();
     });
 
-    await H.sleep(2500);
-    if (log) log('success', `✔ Đã hoàn thành và nộp bài: ${homework.title}`);
+    await H.sleep(3000);
+
+    // Extract score after submission
+    for (let sAttempt = 0; sAttempt < 5; sAttempt++) {
+      const scoreData = await page.evaluate(() => {
+        const text = document.body ? document.body.innerText || '' : '';
+        const match =
+          text.match(/(?:Điểm|Điểm số|Kết quả|Số điểm|Đạt)\s*[:：]?\s*([0-9]+(?:[\.,][0-9]+)?)\s*(?:\/\s*([0-9]+))?/i) ||
+          text.match(/([0-9]+(?:[\.,][0-9]+)?)\s*\/\s*10\s*điểm/i) ||
+          text.match(/([0-9]+)\s*\/\s*([0-9]+)\s*câu đúng/i);
+        return {
+          matchStr: match ? match[0] : null,
+          numStr: match ? match[1] : null,
+        };
+      });
+
+      if (scoreData.numStr) {
+        scoreAchieved = scoreData.numStr.replace(',', '.');
+        scoreText = scoreData.matchStr;
+        break;
+      }
+      await H.sleep(1000);
+    }
+
+    if (scoreAchieved !== null) {
+      if (log) log('success', `🎯 Kết quả chấm điểm: ${scoreText || `${scoreAchieved} điểm`}`);
+    } else {
+      if (log) log('success', `✔ Đã hoàn thành và nộp bài: ${homework.title}`);
+    }
   }
 
   return {
@@ -700,6 +854,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
     solved: answers.size,
     filled,
     failed,
+    score: scoreAchieved,
     submitted: Boolean(submitClicked),
     questions: questions.map((q) => ({ id: q.id, index: q.index, type: q.type, text: q.text, status: questionStatuses.get(q.id) || q.scanStatus })),
   };

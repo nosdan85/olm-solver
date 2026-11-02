@@ -13,6 +13,7 @@ const { OlmClient } = require('./src/olm-client');
 const answerEngine = require('./src/answer-engine');
 const browserEngine = require('./src/browser-engine');
 const runner = require('./src/runner');
+runner.hookConsole();
 const H = require('./src/humanize');
 const tunnelManager = require('./src/tunnel');
 
@@ -140,6 +141,9 @@ app.post('/api/login', async (req, res) => {
       await client.login(uStr, pStr);
       serializedJar = client.serialize();
     } catch (httpErr) {
+      if (/sai tên|sai mật khẩu|không chính xác/i.test(httpErr.message)) {
+        throw httpErr;
+      }
       console.warn(`[login] Fast HTTP login failed (${httpErr.message}), trying Browser login...`);
 
       // 2. Fallback to Browser login (Stealth Chrome bypasses Cloudflare 403)
@@ -497,35 +501,47 @@ app.get('/api/runs', (req, res) => {
   res.json({ ok: true, runs: runner.listRuns() });
 });
 
-// Server-sent events stream for the live log tab.
+// Server-sent events stream for the live log tab (Realtime, 0 delay).
 app.get('/api/events', (req, res) => {
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform, no-store, must-revalidate',
+    'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': '*',
   });
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
   res.write(': connected\n\n');
-  if (res.flush) res.flush();
+  if (typeof res.flush === 'function') res.flush();
 
   const send = (evt) => {
     try {
       res.write(`data: ${JSON.stringify(evt)}\n\n`);
-      if (res.flush) res.flush();
+      if (typeof res.flush === 'function') res.flush();
     } catch {
       /* client vanished */
     }
   };
 
+  // Gửi ngay toàn bộ logs gần nhất của server để web hiển thị tức thì
+  try {
+    const history = runner.getRecentLogs ? runner.getRecentLogs() : [];
+    for (const item of history) {
+      send(item);
+    }
+  } catch {}
+
   const unsub = runner.subscribe(send);
   const ping = setInterval(() => {
     try {
       res.write(': ping\n\n');
-      if (res.flush) res.flush();
+      if (typeof res.flush === 'function') res.flush();
     } catch {
       /* ignore */
     }
-  }, 10000);
+  }, 4000);
 
   req.on('close', () => {
     clearInterval(ping);

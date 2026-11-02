@@ -59,21 +59,42 @@ const UI = (() => {
   // Log pane writer with per-homework filtering support
   const logList = () => document.getElementById('log-list');
   const logBuffer = [];
+  const logSeen = new Set();
   let currentLogFilter = 'all';
 
   function appendLog(entry) {
-    logBuffer.push(entry);
+    if (!entry || !entry.message) return;
+    const msg = String(entry.message).trim();
+    if (!msg) return;
+
+    // Deduplicate identical logs within 2 seconds
+    const dedupKey = `${entry.ts || 0}_${msg}`;
+    if (logSeen.has(dedupKey)) return;
+    logSeen.add(dedupKey);
+    if (logSeen.size > 2000) {
+      const first = logSeen.values().next().value;
+      logSeen.delete(first);
+    }
+
+    const normEntry = {
+      ts: entry.ts || Date.now(),
+      level: entry.level || 'info',
+      message: msg,
+      hwId: entry.hwId ? String(entry.hwId) : null,
+    };
+
+    logBuffer.push(normEntry);
     if (logBuffer.length > 2000) logBuffer.shift();
 
     // Check if this entry should be shown in the current filter view
-    if (currentLogFilter !== 'all' && entry.hwId && String(entry.hwId) !== String(currentLogFilter)) {
+    if (currentLogFilter !== 'all' && normEntry.hwId && String(normEntry.hwId) !== String(currentLogFilter)) {
       return;
     }
 
     const list = logList();
     if (!list) return;
 
-    renderLogLine(entry, list);
+    renderLogLine(normEntry, list);
     while (list.children.length > 600) list.removeChild(list.firstChild);
     list.scrollTop = list.scrollHeight;
   }
@@ -103,30 +124,14 @@ const UI = (() => {
 
   function syncLogs(serverLogs) {
     if (!Array.isArray(serverLogs) || !serverLogs.length) return;
-    const seen = new Set(logBuffer.map(e => `${e.ts}_${e.message}`));
-    let added = false;
     for (const item of serverLogs) {
-      const k = `${item.ts}_${item.message}`;
-      if (!seen.has(k)) {
-        seen.add(k);
-        const entry = {
-          ts: item.ts || Date.now(),
-          level: item.level || 'info',
-          message: String(item.message),
-          hwId: item.hwId ? String(item.hwId) : null,
-        };
-        logBuffer.push(entry);
-        if (logBuffer.length > 2000) logBuffer.shift();
-        added = true;
-      }
-    }
-    if (added) {
-      setLogFilter(currentLogFilter);
+      appendLog(item);
     }
   }
 
   function clearLog() {
     logBuffer.length = 0;
+    logSeen.clear();
     const list = logList();
     if (list) list.innerHTML = '';
   }

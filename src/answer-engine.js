@@ -79,7 +79,7 @@ function currentModel() {
 // opencode zen proxies OpenAI models, so it needs the same payload shape.
 function isOpenAiProvider(baseUrl) {
   const base = (baseUrl || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').toLowerCase();
-  return base.includes('api.openai.com') || base.includes('opencode.ai');
+  return base.includes('api.openai.com') || base.includes('opencode.ai') || base.includes('digishop.work');
 }
 
 // Some gateways (e.g. opencode zen) expect the key in an 'x-api-key' header
@@ -105,6 +105,10 @@ function isClaudeModel(model) {
   return /claude/i.test(model || '');
 }
 
+function isReasoningModel(model) {
+  return /^(gpt-5|gpt-6|o1|o3|o4)/i.test(model || '');
+}
+
 // Builds the request body. Each provider family takes a different payload
 // shape, so this branches on the target model rather than on the URL.
 function buildPayload(userMessageContent, provider) {
@@ -119,16 +123,15 @@ function buildPayload(userMessageContent, provider) {
     // Claude's effort levels are low|medium|high|xhigh|max - there is no 'none'.
     const effort = process.env.OPENAI_REASONING_EFFORT;
     payload.effort = !effort || effort === 'none' ? 'low' : effort;
-    payload.max_tokens = Number(process.env.OPENAI_MAX_TOKENS) || 2048;
-  } else if (isOpenAiProvider(p.baseUrl)) {
+    payload.max_tokens = Number(process.env.OPENAI_MAX_TOKENS) || 4096;
+  } else if (isReasoningModel(p.model) || isOpenAiProvider(p.baseUrl)) {
     payload.reasoning_effort = reasoningEffort();
-    // JSON mode makes the model return a bare JSON object, so the parser
-    // stops having to fish for the first '{' in a prose answer.
-    // Some reasoning models reject json mode -> disable via OPENAI_JSON_MODE=0.
     if (process.env.OPENAI_JSON_MODE !== '0') {
       payload.response_format = { type: 'json_object' };
     }
-    payload.max_completion_tokens = Number(process.env.OPENAI_MAX_TOKENS) || 2048;
+    // digishop supports max_tokens / max_completion_tokens
+    const maxTokens = Number(process.env.OPENAI_MAX_TOKENS) || 4096;
+    payload.max_tokens = maxTokens;
   } else {
     payload.temperature = 0.1;
   }
@@ -260,6 +263,23 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
           };
         }
 
+        if (question.type === 'multi_choice') {
+          let correctIndices = [];
+          if (Array.isArray(parsed.correctIndices)) {
+            correctIndices = parsed.correctIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < options.length);
+          } else if (Number.isInteger(parsed.correctIndex)) {
+            correctIndices = [parsed.correctIndex];
+          }
+          return {
+            correctIndices,
+            answer: parsed.answer || '',
+            explanation: parsed.explanation || '',
+            kind: 'multi_choice',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
         if (options.length > 0) {
           correctIndex = normalizeIndex(parsed.correctIndex ?? parsed.index ?? parsed.answer, options.length);
           if (correctIndex < 0) {
@@ -331,6 +351,18 @@ function buildPrompt(question) {
     return lines.join('\n');
   }
 
+  if (question.type === 'multi_choice') {
+    lines.push('\nĐây là dạng câu hỏi CHỌN NHIỀU ĐÁP ÁN ĐÚNG (chọn những phát biểu / câu đúng):');
+    options.forEach((o, i) => {
+      const letter = String.fromCharCode(65 + i);
+      lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
+    });
+    lines.push('\nHãy chọn TẤT CẢ các đáp án đúng (có thể có 1, 2, 3 hoặc tất cả các đáp án đúng).');
+    lines.push('Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"correctIndices": [0, 2], "explanation": "<phân tích cẩn thận từng ý>", "answer": "<nội dung các ý đúng>"}');
+    return lines.join('\n');
+  }
+
   if (options.length > 0) {
     lines.push('\nDanh sách 4 đáp án lựa chọn (A, B, C, D):');
     options.forEach((o, i) => {
@@ -394,7 +426,7 @@ function buildBatchPrompt(questions) {
     lines.push(`\nID: ${q.id}`);
     lines.push(`Môn học: ${q.subject || ''}`);
     lines.push(`Câu hỏi: ${q.text || '(xem nội dung đã cung cấp)'}`);
-    if (q.type === 'true_false' || Array.isArray(q.statements)) {
+    if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
       lines.push('Mệnh đề Đúng/Sai:');
       (q.statements || []).forEach((s, i) => lines.push(`  [${i}] ${s}`));
     } else if (Array.isArray(q.options) && q.options.length) {
@@ -436,7 +468,7 @@ function validateBatchAnswers(parsed, questions) {
       }) : undefined,
       explanation: item.explanation || '',
     };
-    if (q.type === 'true_false' || Array.isArray(q.statements)) {
+    if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
       if (!Array.isArray(result.statements) || result.statements.length < (q.statements || []).length) {
         throw new Error(`Missing true/false statements for ${id}`);
       }

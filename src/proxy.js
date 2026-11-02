@@ -10,15 +10,18 @@ const SETTINGS_FILE = path.join(__dirname, '..', 'data', 'settings.json');
 let runtimeProxy = null;
 
 function loadStoredProxy() {
-  if (process.env.PROXY_URL || process.env.ROTATING_PROXY_URL || process.env.HTTP_PROXY) {
-    return process.env.PROXY_URL || process.env.ROTATING_PROXY_URL || process.env.HTTP_PROXY;
-  }
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-      if (data.proxyUrl) return data.proxyUrl;
+      if (data.proxyUrl !== undefined) {
+        return data.proxyUrl ? data.proxyUrl.trim() : null;
+      }
     }
   } catch {}
+  if (process.env.PROXY_URL || process.env.ROTATING_PROXY_URL || process.env.HTTP_PROXY) {
+    const val = (process.env.PROXY_URL || process.env.ROTATING_PROXY_URL || process.env.HTTP_PROXY).trim();
+    return val || null;
+  }
   return null;
 }
 

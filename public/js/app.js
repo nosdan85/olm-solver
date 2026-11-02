@@ -1299,10 +1299,10 @@
     };
 
     es.onerror = () => {
-      // Reconnect silently without spamming error banners to the user
+      // Reconnect quickly without delay
       try { es.close(); } catch {}
       state.es = null;
-      setTimeout(connectEvents, 4000);
+      setTimeout(connectEvents, 1200);
     };
   }
 

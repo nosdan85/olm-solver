@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const H = require('./humanize');
 const answerEngine = require('./answer-engine');
 const { parseQuestions, findSubmitInfo } = require('./question-parser');
+const logger = require('./logger');
 
 const bus = new EventEmitter();
 bus.setMaxListeners(200);
@@ -17,6 +18,7 @@ function log(runId, level, message, hwId = null) {
     level, // info | warn | error | success
     message: String(message),
     hwId: hwId ? String(hwId) : null,
+    runId,
   };
   const run = runs.get(runId);
   if (run) {
@@ -31,7 +33,13 @@ function log(runId, level, message, hwId = null) {
       }
     }
   }
-  bus.emit('log', { runId, ...entry });
+
+  // Print to terminal with originalConsole to avoid re-intercepting
+  logger.originalConsole.log(`[OLM][${(level || 'info').toUpperCase()}] ${message}`);
+
+  // Broadcast to all SSE clients immediately with 0 delay
+  logger.broadcast(entry);
+  bus.emit('log', entry);
 }
 
 function emit(runId, type, payload = {}) {
@@ -41,10 +49,10 @@ function emit(runId, type, payload = {}) {
 function subscribe(fn) {
   const onLog = (data) => fn(data);
   const onEvent = (data) => fn(data);
-  bus.on('log', onLog);
+  logger.bus.on('log', onLog);
   bus.on('run-event', onEvent);
   return () => {
-    bus.off('log', onLog);
+    logger.bus.off('log', onLog);
     bus.off('run-event', onEvent);
   };
 }
@@ -195,8 +203,8 @@ async function executeRun(run, session, config) {
 
         hw.result = result;
         hw.status = result.failed > 0 ? 'partial' : 'done';
-        hw.snapshot = (result.questions || []).map((q) => ({ id: q.id, index: q.index, type: q.type, text: q.text, status: q.status }));
-        log(run.id, 'success', `✔ Hoàn tất bài "${hw.title}" (Đã điền: ${result.filled}/${result.scanned} câu)`, hw.id);
+        const scoreStr = result.score ? ` - Điểm đạt được: ${result.score}đ` : '';
+        log(run.id, 'success', `✔ Hoàn tất bài "${hw.title}" (Đã điền: ${result.filled}/${result.scanned} câu${scoreStr})`, hw.id);
         emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: hw.status, title: hw.title, result });
       } catch (err) {
         log(run.id, 'error', `✖ Lỗi bài "${hw.title}": ${err.message}`, hw.id);
@@ -418,4 +426,6 @@ module.exports = {
   scheduleAt,
   cancelSchedule,
   runs,
+  getRecentLogs: logger.getRecentLogs,
+  hookConsole: logger.hookConsole,
 };

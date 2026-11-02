@@ -12,7 +12,7 @@ const Api = (() => {
   const LICENSE_KEY = 'olm.license';
 
   // URL backend mặc định khi deploy trên Render (dùng cho mobile app iOS và web Vercel)
-  const DEFAULT_CLOUD_URL = 'https://olm-solver-backend.onrender.com';
+  const DEFAULT_CLOUD_URL = 'https://olm-solver.onrender.com';
 
   function getServerUrl() {
     try {

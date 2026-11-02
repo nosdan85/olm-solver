@@ -118,17 +118,51 @@ async function login(browser, { username, password, loginUrl, log }) {
 
   await H.sleep(H.randInt(400, 1200));
 
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null),
-    page.click('button[type=submit], input[type=submit], .btn-login, .dang-nhap, button'),
-  ]);
+  await H.sleep(H.randInt(400, 800));
+
+  // Click the real "Đăng nhập" button (.btn-submit)
+  const clicked = await page.evaluate(() => {
+    const btn = document.querySelector('.btn-submit, button.btn-submit') ||
+                Array.from(document.querySelectorAll('button, input[type=submit]')).find((b) =>
+                  /đăng nhập|dang nhap/i.test(b.innerText || b.value || '') && !/quên mật khẩu|forget/i.test(b.innerText || '')
+                );
+    if (btn) {
+      btn.click();
+      return true;
+    }
+    return false;
+  });
+
+  if (!clicked) {
+    await page.click('button.btn-submit, .btn-submit, input[type=submit]');
+  }
+
+  // Wait for redirect to dashboard or error alert
+  try {
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+  } catch {
+    /* OLM may update via SPA or show error alert */
+  }
+
+  await H.sleep(2000);
+
+  const currentUrl = page.url();
+  const stillOnLogin = /dang-?nhap/i.test(currentUrl);
+
+  if (stillOnLogin) {
+    const errText = await page.evaluate(() => {
+      const modal = document.querySelector('.main-modal-v2-content, .swal2-html-container, .toast, .alert, .tw-text-danger, .text-danger');
+      if (modal) return modal.innerText.trim();
+      const anyErr = Array.from(document.querySelectorAll('div, p, span')).find(el => 
+        /không chính xác|sai mật khẩu|sai tên|tài khoản không tồn tại/i.test(el.innerText || '')
+      );
+      return anyErr ? anyErr.innerText.trim() : null;
+    });
+    await page.close();
+    throw new Error(errText || 'Sai tên đăng nhập hoặc mật khẩu OLM');
+  }
 
   const cookies = await page.cookies();
-  const stillOnLogin = page.url().includes('dang-nhap');
-  if (stillOnLogin) {
-    await page.close();
-    throw new Error('Login did not succeed (still on the login page)');
-  }
   if (log) log('info', `Browser login OK (${cookies.length} cookies)`);
 
   return { page, cookies };

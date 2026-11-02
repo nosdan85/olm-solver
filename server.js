@@ -108,22 +108,68 @@ app.get('/api/health', (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
-    return res.status(400).json({ error: 'Missing username or password' });
+    return res.status(400).json({ error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
   }
+
+  const uStr = String(username).trim();
+  const pStr = String(password);
 
   try {
     const client = new OlmClient();
-    await client.login(String(username), String(password));
-    const session = sessionStore.create(String(username), client.serialize(), client.ua);
+    let serializedJar = null;
+
+    // 1. Try fast HTTP login first
+    try {
+      await client.login(uStr, pStr);
+      serializedJar = client.serialize();
+    } catch (httpErr) {
+      console.warn(`[login] Fast HTTP login failed (${httpErr.message}), trying Browser login...`);
+
+      // 2. Fallback to Browser login (Stealth Chrome bypasses Cloudflare 403)
+      if (browserEngine.isAvailable()) {
+        const browser = await browserEngine.launch();
+        try {
+          const { page, cookies } = await browserEngine.login(browser, {
+            username: uStr,
+            password: pStr,
+            loginUrl: client.loginPageUrl,
+            log: (lvl, msg) => console.log('[browser-login]', lvl, msg),
+          });
+          await page.close().catch(() => {});
+
+          const { CookieJar } = require('tough-cookie');
+          const jar = new CookieJar();
+          for (const c of cookies || []) {
+            const cookieStr = `${c.name}=${c.value}; Domain=${c.domain || 'olm.vn'}; Path=${c.path || '/'}`;
+            await jar.setCookie(cookieStr, 'https://olm.vn').catch(() => {});
+          }
+          serializedJar = jar.toJSON();
+        } finally {
+          await browser.close().catch(() => {});
+        }
+      } else {
+        throw httpErr;
+      }
+    }
+
+    if (!serializedJar) {
+      throw new Error('Đăng nhập không thành công');
+    }
+
+    const session = sessionStore.create(uStr, serializedJar, client.ua);
     res.json({
       ok: true,
       sessionId: session.id,
       username: session.username,
-      message: 'Logged in',
+      message: 'Đăng nhập thành công',
     });
   } catch (err) {
-    console.error('[login]', err.message);
-    res.status(401).json({ error: err.message || 'Login failed' });
+    console.error('[login error]', err.message);
+    let msg = err.message || 'Đăng nhập thất bại';
+    if (/không chính xác|sai mật khẩu|sai tên/i.test(msg)) {
+      msg = 'Tên đăng nhập hoặc mật khẩu OLM không chính xác.';
+    }
+    res.status(401).json({ error: msg });
   }
 });
 

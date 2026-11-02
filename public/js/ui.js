@@ -103,13 +103,19 @@ const UI = (() => {
 
   function syncLogs(serverLogs) {
     if (!Array.isArray(serverLogs) || !serverLogs.length) return;
-    const seen = new Set(logBuffer.slice(-300).map(e => `${e.ts}_${e.message}`));
+    const seen = new Set(logBuffer.map(e => `${e.ts}_${e.message}`));
     let added = false;
     for (const item of serverLogs) {
       const k = `${item.ts}_${item.message}`;
       if (!seen.has(k)) {
         seen.add(k);
-        logBuffer.push(item);
+        const entry = {
+          ts: item.ts || Date.now(),
+          level: item.level || 'info',
+          message: String(item.message),
+          hwId: item.hwId ? String(item.hwId) : null,
+        };
+        logBuffer.push(entry);
         if (logBuffer.length > 2000) logBuffer.shift();
         added = true;
       }
@@ -268,4 +274,15 @@ const UI = (() => {
     notify,
     playBeep,
   };
+
+  if (typeof window !== 'undefined') {
+    window.UI = api;
+    window.Ui = api;
+  }
+  return api;
 })();
+
+if (typeof window !== 'undefined') {
+  window.UI = UI;
+  window.Ui = UI;
+}

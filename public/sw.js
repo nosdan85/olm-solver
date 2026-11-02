@@ -1,4 +1,4 @@
-const CACHE_NAME = 'olm-pwa-v4';
+const CACHE_NAME = 'olm-pwa-v6';
 const APP_SHELL = [
   '/',
   '/index.html',

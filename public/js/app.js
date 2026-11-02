@@ -1,7 +1,7 @@
 'use strict';
 
 (() => {
-  const { $, $$, el, escapeHtml, formatDateTime, debounce, appendLog, clearLog, setLogFilter, setStatus, setRunStatus, toast, notify } = UI;
+  const { $, $$, el, escapeHtml, formatDateTime, debounce, appendLog, syncLogs, clearLog, setLogFilter, setStatus, setRunStatus, toast, notify } = UI;
 
   const state = {
     tab: 'login',
@@ -1493,7 +1493,11 @@
           }
           // Sync all server logs into the UI buffer so log is never lost or frozen
           if (Array.isArray(r.logs) && r.logs.length > 0) {
-            Ui.syncLogs(r.logs);
+            if (typeof syncLogs === 'function') {
+              syncLogs(r.logs);
+            } else if (window.UI && typeof window.UI.syncLogs === 'function') {
+              window.UI.syncLogs(r.logs);
+            }
           }
           if (r.status === 'done') {
             stopSmartPolling();

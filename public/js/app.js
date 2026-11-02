@@ -460,7 +460,7 @@
     const filter = state.filter || 'todo';
     const totalCount = state.homeworks.length;
     const todoCount = state.homeworks.filter((h) => !h.isDone && !h.isExpired).length;
-    const retryCount = state.homeworks.filter((h) => Boolean(h.canRetry || (h.isDone && !h.isExpired))).length;
+    const retryCount = state.homeworks.filter((h) => Boolean(h.isDone && !h.isExpired && h.canRetry)).length;
     const doneCount = state.homeworks.filter((h) => Boolean(h.isDone)).length;
     const expiredCount = state.homeworks.filter((h) => Boolean(h.isExpired && !h.isDone)).length;
 
@@ -497,8 +497,7 @@
     if (filter === 'todo') {
       items = state.homeworks.filter((h) => !h.isDone && !h.isExpired);
     } else if (filter === 'retry') {
-      // FILTER REQUIREMENT: bài nào cho luyện tập lại thì lọc ra để làm lại bài đấy
-      items = state.homeworks.filter((h) => Boolean(h.canRetry || (h.isDone && !h.isExpired)));
+      items = state.homeworks.filter((h) => Boolean(h.isDone && !h.isExpired && h.canRetry));
     } else if (filter === 'done') {
       items = state.homeworks.filter((h) => Boolean(h.isDone));
     } else if (filter === 'expired') {

@@ -247,6 +247,9 @@ app.get('/api/homeworks', requireSession, async (req, res) => {
     res.json({ ok: true, source: url, count: items.length, homeworks: items });
   } catch (err) {
     console.error('[homeworks]', err.message);
+    if (err.code === 'NO_SESSION' || /hết hạn|chưa đăng nhập/i.test(err.message)) {
+      return res.status(401).json({ error: err.message, code: 'NO_SESSION' });
+    }
     res.status(502).json({ error: err.message });
   }
 });

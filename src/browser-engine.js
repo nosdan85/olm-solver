@@ -213,25 +213,25 @@ async function login(browser, { username, password, loginUrl, log }) {
   await H.sleep(2000);
 
   const cookies = await page.cookies();
-  const hasSessionCookie = cookies.some((c) => c.name === 'onlinemath_session' || c.name === 'laravel_session');
   const currentUrl = page.url();
-  const stillOnLogin = /dang-?nhap/i.test(currentUrl) && !hasSessionCookie;
+  const stillOnLogin = /dang-?nhap/i.test(currentUrl) || await page.evaluate(() => {
+    return !!(document.querySelector('input[type="password"]') || /Tên đăng nhập hoặc mật khẩu|đăng nhập bằng/i.test(document.body?.innerText || ''));
+  });
 
   if (stillOnLogin) {
     const errText = await page.evaluate(() => {
       const modal = document.querySelector('.main-modal-v2-content, .swal2-html-container, .toast, .alert, .tw-text-danger, .text-danger');
       if (modal && modal.innerText.trim()) {
         const text = modal.innerText.trim();
-        // Extract the error sentence if nested
-        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác/i);
+        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác[^.\n]*[.\n]?/i);
         return m ? m[0].trim() : text;
       }
       const anyErr = Array.from(document.querySelectorAll('div, p, span')).find(el => 
-        /không chính xác|sai mật khẩu|sai tên|tài khoản không tồn tại/i.test(el.innerText || '')
+        /không chính xác|sai mật khẩu|sai tên|tài khoản không tồn tại|bị khóa/i.test(el.innerText || '')
       );
       if (anyErr && anyErr.innerText.trim()) {
         const text = anyErr.innerText.trim();
-        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác/i);
+        const m = text.match(/Tên đăng nhập hoặc mật khẩu[^.\n]+[.\n]?|tài khoản[^.\n]+[.\n]?|mật khẩu không chính xác[^.\n]*[.\n]?/i);
         return m ? m[0].trim() : text;
       }
       return null;
@@ -549,11 +549,15 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   const questionStatuses = new Map();
   for (const question of questions) {
     if (signal?.aborted) throw new Error('Tiến trình đã bị dừng bởi người dùng');
-    const answer = answers.get(question.id);
-    if (!answer || answer.error) {
-      failed++;
-      questionStatuses.set(question.id, 'unresolved');
-      continue;
+    let answer = answers.get(question.id);
+    if (!answer || answer.error || (question.type === 'choice' && (answer.correctIndex === undefined || answer.correctIndex < 0))) {
+      if (question.type === 'choice') {
+        answer = { id: question.id, correctIndex: 0, answer: 'A' };
+      } else if (question.type === 'true_false') {
+        answer = { id: question.id, trueFalseAnswers: [true, true, true, true] };
+      } else {
+        answer = { id: question.id, answer: '1' };
+      }
     }
 
     let planned = answer;
@@ -897,6 +901,24 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       if (log) log('warn', `Trang tải chậm (${navErr.message}), đang kiểm tra nội dung...`);
     }
 
+    // Check if Cloudflare Turnstile challenge is present
+    try {
+      const pageTitle = await page.title().catch(() => '');
+      if (/just a moment|cloudflare/i.test(pageTitle)) {
+        if (log) log('info', 'Đang vượt bảo vệ Cloudflare...');
+        for (const frame of page.frames()) {
+          try {
+            const cfBox = await frame.$('input[type="checkbox"], #challenge-stage, .ctp-checkbox-label');
+            if (cfBox) {
+              await cfBox.click();
+              await H.sleep(3000);
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
     // 1. Chờ OLM Single Page Application mount giao diện
     try {
       await page.waitForFunction(() => {
@@ -911,32 +933,33 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       }, { timeout: 15000 });
     } catch {}
 
-    // 2. Kiểm tra xem bài tập có đang ở màn hình kết quả của bài đã hoàn thành từ trước không
-    const isAlreadyDoneScreen = await page.evaluate(() => {
-      const text = document.body ? document.body.innerText || '' : '';
-      const hasResultText = /đừng nản lòng|kết quả luyện tập|kết quả bài làm|chúc mừng bạn đã hoàn thành/i.test(text) ||
-                            (/xem đáp án/i.test(text) && /thời gian làm bài|đúng.*câu|sai.*câu/i.test(text));
-      const hasResultBox = !!document.querySelector('.practice-result, .box-result, .box-score, .modal-result, .result-practice');
-      const hasActiveQuiz = !!(document.querySelector('.tw-olm-chip-question') ||
-                               document.querySelector('default-root')?.shadowRoot?.querySelector('type-quiz-x-mobile, type-quiz-x, .qselect'));
-      return (hasResultText || hasResultBox) && !hasActiveQuiz;
+    // 2. Kiểm tra xem bài tập có nút "Luyện tập lại" (bài đã làm từ trước) không
+    const hasRedoButton = await page.evaluate(() => {
+      const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
+      if (byId && (byId.offsetWidth > 0 || byId.offsetHeight > 0)) return true;
+      const candidates = Array.from(document.querySelectorAll('button, a, div[role=button], span, p')).filter((el) => {
+        const text = (el.innerText || el.textContent || '').trim();
+        const isVis = el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+        return isVis && /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text);
+      });
+      return candidates.length > 0;
     });
 
-    if (isAlreadyDoneScreen) {
+    if (hasRedoButton) {
       if (log) log('info', 'Phát hiện bài đã làm từ trước -> Đang nhấn "Luyện tập lại" để làm lại bài...');
       let redoClicked = false;
       for (let r = 0; r < 5; r++) {
         redoClicked = await page.evaluate(() => {
           const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
-          if (byId) {
+          if (byId && (byId.offsetWidth > 0 || byId.offsetHeight > 0)) {
             byId.click();
             return true;
           }
 
           const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
             const text = (el.innerText || el.textContent || '').trim();
-            return /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text) ||
-                   (text.includes('Luyện tập lại') && text.length < 35);
+            const isVis = el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+            return isVis && /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text);
           });
 
           if (candidates.length > 0) {

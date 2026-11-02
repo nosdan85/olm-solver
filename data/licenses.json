@@ -8,10 +8,25 @@
     "createdAt": 1793575000000,
     "activatedAt": 1793608000000,
     "expiresAt": 1793867200000,
-    "hwid": null,
-    "deviceInfo": "Web Client",
+    "hwid": "e3fde93e-670d-4af4-8798-69fe1568aa2f",
+    "deviceInfo": null,
     "status": "active",
     "notes": "User key",
-    "lastChecked": null
+    "lastChecked": 1793618576338
+  },
+  "OLM-3D-4277DB-6FB57B": {
+    "key": "OLM-3D-4277DB-6FB57B",
+    "name": "anime",
+    "nameNormalized": "anime",
+    "type": "3_days",
+    "durationDays": 3,
+    "createdAt": 1793618659920,
+    "activatedAt": 1793619015394,
+    "expiresAt": 1793878215394,
+    "hwid": "device_test_123",
+    "deviceInfo": "Apple iPhone",
+    "status": "active",
+    "notes": "",
+    "lastChecked": 1793619015394
   }
 }

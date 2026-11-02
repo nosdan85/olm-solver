@@ -289,6 +289,7 @@ class OlmClient {
         if (items.length > 0) return { url, items };
         errors.push(`${url} -> 0 items parsed`);
       } catch (err) {
+        if (err.code === 'NO_SESSION') throw err;
         errors.push(`${url} -> ${err.message}`);
       }
     }
@@ -326,12 +327,22 @@ function parseHomeworks(html, baseUrl) {
   const items = [];
   const seen = new Set();
 
+  // If page is a login page or session expired page, throw NO_SESSION
+  const isLoginPage = /id=["']login-form["']|class=["'][^"']*login-form|action=["'][^"']*\/dangnhap|\/social\/google|quên mật khẩu|ghi nhớ đăng nhập/i.test(html) &&
+                      !$('.homework-item, .exercise-item, .card-homework, [data-homework-id]').length;
+  if (isLoginPage) {
+    const err = new Error('Phiên đăng nhập OLM đã hết hạn hoặc chưa đăng nhập.');
+    err.code = 'NO_SESSION';
+    throw err;
+  }
+
   const push = (el) => {
     const $el = $(el);
     const title = ($el.attr('title') || $el.data('title') || $el.find('.title, .name, h3, h4, h5').first().text() || '').trim();
-    if (!title) return;
+    if (!title || /đăng nhập|đăng ký|quên mật khẩu/i.test(title)) return;
 
     const link = $el.find('a[href]').first().attr('href') || $el.closest('a').attr('href') || $el.attr('href');
+    if (!link || /\/social\/|\/dangnhap|\/login|\/auth\/|\/logout|\/quenmatkhau|\/register|redirect_url=/i.test(link)) return;
     const abs = link ? new URL(link, baseUrl).toString() : '';
 
     const statusText = ($el.find('.status, .state, .badge, .label, .chip').first().text() || '').trim();
@@ -346,7 +357,8 @@ function parseHomeworks(html, baseUrl) {
     seen.add(key);
 
     const fullText = $el.text();
-    const canRetry = /luyện\s*tập|làm\s*lại|thi\s*lại|luyentaplai/i.test(fullText);
+    const isDone = /đã\s*xong|hoàn\s*thành|đã\s*làm/i.test(statusText);
+    const canRetry = isDone && /luyện\s*tập|làm\s*lại|thi\s*lại|luyentaplai/i.test(fullText);
 
     items.push({
       id: String(id),
@@ -355,7 +367,7 @@ function parseHomeworks(html, baseUrl) {
       deadline: deadlineText,
       status: statusText || 'unknown',
       url: abs,
-      isDone: /đã\s*xong|hoàn\s*thành|đã\s*làm/i.test(statusText),
+      isDone,
       isExpired: /hết\s*hạn/i.test(statusText),
       canRetry,
     });
@@ -389,6 +401,8 @@ function parseHomeworks(html, baseUrl) {
       const href = $el.attr('href');
       const title = $el.text().trim();
       if (!href || !title || title.length < 4) return;
+      if (/\/social\/|\/dangnhap|\/login|\/auth\/|\/logout|\/quenmatkhau|\/register|redirect_url=/i.test(href)) return;
+      if (/đăng nhập|đăng ký|quên mật khẩu/i.test(title)) return;
       const abs = new URL(href, baseUrl).toString();
       if (seen.has(abs)) return;
       seen.add(abs);
@@ -399,6 +413,9 @@ function parseHomeworks(html, baseUrl) {
         deadline: '',
         status: 'unknown',
         url: abs,
+        isDone: false,
+        isExpired: false,
+        canRetry: false,
       });
     });
   }

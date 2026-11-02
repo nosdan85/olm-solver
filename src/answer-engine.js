@@ -228,9 +228,6 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        if (onLog && attempt === 0 && pi === 0) {
-          onLog('info', `🤖 Đang gửi AI (${provider.model})...`);
-        }
         const res = await callAi(
           buildPayload(userMessageContent, provider),
           { timeoutMs: question.imageBase64 ? 45000 : 30000, provider }
@@ -287,13 +284,13 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
         // Quota/rate-limit (429) is worth retrying unless daily quota exhausted.
         if (status && status >= 400 && status < 500 && status !== 429) {
           disableProvider(provider, `HTTP ${status}: ${err.message}`);
-          if (onLog) onLog('warn', `⚠️ Model ${provider.model} lỗi (${err.message}), bỏ qua provider này.`);
+          if (onLog) onLog('warn', `⚠️ Kênh chính gián đoạn (${err.message}), chuyển sang kênh dự phòng...`);
           break;
         }
         if (status === 429 && /quota.*(day|per day)|exceeded your current quota/i.test(err.message || '')) {
           err.quotaExhausted = true;
           disableProvider(provider, `Hết quota ngày: ${err.message}`);
-          if (onLog) onLog('warn', `⚠️ Model ${provider.model} hết quota ngày. Chuyển sang model dự phòng...`);
+          if (onLog) onLog('warn', `⚠️ Kênh chính đạt giới hạn. Đang chuyển sang kênh dự phòng...`);
           break;
         }
         if (attempt < retries) {
@@ -377,6 +374,8 @@ function buildBatchPrompt(questions) {
     'Giải các câu hỏi dưới đây. Mỗi câu có một ID duy nhất.',
     'Trả về DUY NHẤT JSON hợp lệ dạng: {"answers":[{"id":"q_1","correctIndex":0,"answer":"...","statements":[true],"explanation":"..."}]}',
     'Không bỏ qua câu nào. Giữ nguyên chính xác ID được cung cấp.',
+    'Đối với câu trắc nghiệm: chỉ định "correctIndex" (0 cho đáp án A, 1 cho B, 2 cho C, 3 cho D).',
+    'Đối với câu tự luận/trả lời ngắn: điền vào trường "answer" nội dung chính xác, ngắn gọn nhất theo SGK (tên người, địa danh, văn kiện, con số hoặc từ ngữ cốt lõi, không viết thành câu văn dài).',
   ];
 
   for (const q of questions) {
@@ -390,7 +389,7 @@ function buildBatchPrompt(questions) {
       lines.push('Lựa chọn:');
       q.options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
     } else {
-      lines.push('Dạng trả lời ngắn/tự luận.');
+      lines.push('Dạng tự luận/trả lời ngắn: ghi đáp án ngắn gọn nhất theo chuẩn SGK vào "answer".');
     }
   }
   return lines.join('\n');

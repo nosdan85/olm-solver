@@ -178,16 +178,23 @@ const UI = (() => {
     }
 
     // 1. Capacitor Native Push/Local Notifications (if running as native iOS App)
-    if (window.Capacitor?.Plugins?.LocalNotifications) {
+    const localNotif = window.Capacitor?.Plugins?.LocalNotifications;
+    if (localNotif) {
       try {
-        await window.Capacitor.Plugins.LocalNotifications.schedule({
+        let perm = await localNotif.checkPermissions().catch(() => null);
+        if (!perm || perm.display !== 'granted') {
+          perm = await localNotif.requestPermissions().catch(() => null);
+        }
+        await localNotif.schedule({
           notifications: [
             {
-              id: Math.floor(Date.now() % 100000),
-              title,
-              body,
-              schedule: { at: new Date(Date.now() + 500) },
+              id: Math.floor(Math.random() * 800000) + 1000,
+              title: title || 'OLM Solver',
+              body: body || 'Đã hoàn thành giải bài tập!',
+              schedule: { at: new Date(Date.now() + 100) },
               sound: 'default',
+              actionTypeId: '',
+              extra: null,
             },
           ],
         });

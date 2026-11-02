@@ -39,9 +39,47 @@
 
   // ------------------------------------------------------------- tabs
 
+  let bgKeepAliveCtx = null;
+  function startBgKeepAlive() {
+    try {
+      if (!bgKeepAliveCtx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          bgKeepAliveCtx = new AudioCtx();
+          const osc = bgKeepAliveCtx.createOscillator();
+          const gain = bgKeepAliveCtx.createGain();
+          gain.gain.setValueAtTime(0.0001, bgKeepAliveCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(bgKeepAliveCtx.destination);
+          osc.start();
+        }
+      }
+    } catch {}
+  }
+
+  function stopBgKeepAlive() {
+    try {
+      if (bgKeepAliveCtx) {
+        bgKeepAliveCtx.close().catch(() => {});
+        bgKeepAliveCtx = null;
+      }
+    } catch {}
+  }
+
+  function updateAuthTabs(isLoggedIn) {
+    const loginTab = $('#tab-nav-login');
+    const logoutTab = $('#tab-nav-logout');
+    if (loginTab) loginTab.style.display = isLoggedIn ? 'none' : '';
+    if (logoutTab) logoutTab.style.display = isLoggedIn ? '' : 'none';
+  }
+
   function bindTabs() {
     $$('#tabbar .tab').forEach((btn) => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      if (btn.id === 'tab-nav-logout') {
+        btn.addEventListener('click', doLogout);
+      } else {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      }
     });
     const sBtn = $('#btn-settings');
     if (sBtn) sBtn.addEventListener('click', () => switchTab('settings'));
@@ -103,6 +141,7 @@
       $('#in-password').value = '';
       setStatus(`Đã đăng nhập: ${state.currentUser}`, 'on');
       appendLog({ ts: Date.now(), level: 'success', message: `Đăng nhập thành công (${state.currentUser})` });
+      updateAuthTabs(true);
       switchTab('homework');
       await refreshHomeworks();
     } catch (err) {
@@ -124,6 +163,7 @@
         state.currentUser = res.username || 'OLM User';
         updateSessionDisplay(state.currentUser);
         setStatus(`Đã đăng nhập: ${state.currentUser}`, 'on');
+        updateAuthTabs(true);
         switchTab('homework');
         await refreshHomeworks();
         return;
@@ -143,6 +183,7 @@
         updateSessionDisplay(state.currentUser);
         setStatus(`Đã đăng nhập: ${state.currentUser}`, 'on');
         appendLog({ ts: Date.now(), level: 'success', message: `Tự động khôi phục phiên (${state.currentUser})` });
+        updateAuthTabs(true);
         switchTab('homework');
         await refreshHomeworks();
         return;
@@ -153,6 +194,7 @@
 
     // 3. Fallback: Show login view
     Api.setToken('');
+    updateAuthTabs(false);
     setStatus('Chưa đăng nhập', '');
     switchTab('login');
   }
@@ -485,9 +527,12 @@
 
     try {
       // Request notification permission if not yet decided
-      if ('Notification' in window && Notification.permission === 'default') {
+      if (window.Capacitor?.Plugins?.LocalNotifications) {
+        window.Capacitor.Plugins.LocalNotifications.requestPermissions().catch(() => {});
+      } else if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission().catch(() => {});
       }
+      startBgKeepAlive();
 
       const res = await Api.startRun(selected, config);
       state.runId = res.runId;
@@ -508,6 +553,7 @@
 
       switchTab('log');
     } catch (err) {
+      stopBgKeepAlive();
       toast(err.message, 'error');
       appendLog({ ts: Date.now(), level: 'error', message: `Khởi chạy lỗi: ${err.message}` });
     } finally {
@@ -665,46 +711,92 @@
     const btnQuick = $('#btn-quick-notify');
     const statusTxt = $('#notify-status');
 
-    function updateNotifyStatus() {
-      if (!('Notification' in window)) {
-        if (statusTxt) statusTxt.textContent = 'Trình duyệt không hỗ trợ Web Notification.';
-        return;
+    async function checkPermStatus() {
+      if (window.Capacitor?.Plugins?.LocalNotifications) {
+        try {
+          const check = await window.Capacitor.Plugins.LocalNotifications.checkPermissions();
+          return check?.display || 'prompt';
+        } catch {
+          return 'prompt';
+        }
       }
-      if (Notification.permission === 'granted') {
+      if ('Notification' in window) {
+        return Notification.permission;
+      }
+      return 'unsupported';
+    }
+
+    async function updateNotifyStatus() {
+      const perm = await checkPermStatus();
+      if (perm === 'granted') {
         if (statusTxt) {
-          statusTxt.textContent = '✔ Đã bật thông báo! iPhone sẽ báo khi bài làm xong.';
+          statusTxt.textContent = '✔ Đã bật thông báo! iPhone sẽ hiện banner và phát chuông khi bài giải xong.';
           statusTxt.style.color = 'var(--ok)';
         }
         if (btnEnable) {
-          btnEnable.textContent = '✔ Đã bật thông báo';
+          btnEnable.textContent = '✔ Đã bật thông báo (Banner iOS)';
           btnEnable.disabled = true;
         }
         if (btnQuick) btnQuick.style.color = 'var(--ok)';
-      } else if (Notification.permission === 'denied') {
+      } else if (perm === 'denied') {
         if (statusTxt) {
-          statusTxt.textContent = '✕ Thông báo bị chặn trong cài đặt trình duyệt.';
+          statusTxt.textContent = '✕ Quyền thông báo đã bị từ chối trong Cài đặt iPhone.';
           statusTxt.style.color = 'var(--err)';
+        }
+        if (btnEnable) {
+          btnEnable.textContent = 'Bị chặn trong Cài đặt';
+          btnEnable.disabled = false;
+        }
+      } else if (perm === 'unsupported') {
+        if (statusTxt) {
+          statusTxt.textContent = 'Thiết bị hoặc trình duyệt không hỗ trợ thông báo đẩy.';
+          statusTxt.style.color = 'var(--text-dim)';
         }
       } else {
         if (statusTxt) {
-          statusTxt.textContent = 'Chưa cấp quyền thông báo. Bấm nút trên để bật.';
+          statusTxt.textContent = 'Chưa bật thông báo. Bấm nút dưới để nhận banner khi giải xong.';
           statusTxt.style.color = 'var(--text-dim)';
+        }
+        if (btnEnable) {
+          btnEnable.textContent = 'Bật thông báo khi giải xong';
+          btnEnable.disabled = false;
         }
       }
     }
 
     const requestPerm = async () => {
-      if ('Notification' in window) {
-        const res = await Notification.requestPermission();
-        updateNotifyStatus();
-        if (res === 'granted') {
-          toast('Đã bật thông báo thành công!', 'ok');
-          notify('OLM Solver', 'Thông báo đã sẵn sàng trên thiết bị của bạn!');
-        } else {
-          toast('Chưa cho phép thông báo', 'warn');
+      // 1. Capacitor Native LocalNotifications (iOS App)
+      if (window.Capacitor?.Plugins?.LocalNotifications) {
+        try {
+          const res = await window.Capacitor.Plugins.LocalNotifications.requestPermissions();
+          await updateNotifyStatus();
+          if (res?.display === 'granted') {
+            toast('Đã bật thông báo iOS thành công!', 'ok');
+            await notify('OLM Solver', 'Thông báo đã kích hoạt! Banner & âm thanh sẵn sàng như Messenger.');
+            return;
+          } else {
+            toast('Quyền thông báo chưa được cấp', 'warn');
+            return;
+          }
+        } catch (err) {
+          console.warn('Capacitor requestPermissions error:', err);
         }
-      } else if (window.Capacitor?.Plugins?.LocalNotifications) {
-        toast('Đã sẵn sàng thông báo native iOS', 'ok');
+      }
+
+      // 2. Web Notification fallback
+      if ('Notification' in window) {
+        try {
+          const res = await Notification.requestPermission();
+          await updateNotifyStatus();
+          if (res === 'granted') {
+            toast('Đã bật thông báo thành công!', 'ok');
+            await notify('OLM Solver', 'Thông báo đã sẵn sàng trên thiết bị của bạn!');
+          } else {
+            toast('Chưa cho phép thông báo', 'warn');
+          }
+        } catch (err) {
+          console.warn('Notification.requestPermission error:', err);
+        }
       }
     };
 
@@ -712,9 +804,9 @@
     if (btnQuick) btnQuick.addEventListener('click', requestPerm);
 
     if (btnTest) {
-      btnTest.addEventListener('click', () => {
-        notify('OLM Solver - Thử nghiệm', 'Thông báo hoạt động tốt trên iPhone!');
-        toast('Đã gửi thông báo thử nghiệm', 'info');
+      btnTest.addEventListener('click', async () => {
+        toast('Đang gửi thử thông báo...', 'info');
+        await notify('OLM Solver - Hoàn tất', 'Đã giải xong tất cả các bài tập! Điểm số: 10/10 🎉');
       });
     }
 
@@ -737,6 +829,7 @@
       clearLog();
       setStatus('Chưa đăng nhập', '');
       updateSessionDisplay('');
+      updateAuthTabs(false);
       switchTab('login');
       toast('Đã đăng xuất tài khoản', 'info');
     }
@@ -815,7 +908,7 @@
         if (pText) pText.textContent = `Đang quét câu ${data.completed}/${data.total}…`;
       } else if (data.type === 'solve-progress') {
         const pText = $('#run-progress-text');
-        if (pText) pText.textContent = `AI đã giải ${data.completed}/${data.total} câu…`;
+        if (pText) pText.textContent = `Đang xử lý ${data.completed}/${data.total} câu…`;
       } else if (data.type === 'fill-progress') {
         const pText = $('#run-progress-text');
         if (pText) pText.textContent = `Đang điền câu ${data.completed}/${data.total}…`;
@@ -827,6 +920,7 @@
           appendLog({ ts: Date.now(), level: 'success', message: `✔ Hoàn thành: "${data.title || ''}"`, hwId: data.hwId });
         }
       } else if (data.type === 'done') {
+        stopBgKeepAlive();
         setRunStatus('done');
         setStatus('Đã hoàn thành', 'on');
         const pText = $('#run-progress-text');
@@ -839,6 +933,7 @@
         toast('Đã hoàn thành toàn bộ bài tập!', 'ok');
         appendLog({ ts: Date.now(), level: 'success', message: '🎉 Hoàn tất toàn bộ bài tập.' });
       } else if (data.type === 'error') {
+        stopBgKeepAlive();
         setRunStatus('error');
         setStatus('Lỗi', 'err');
       } else if (data.type === 'scheduled') {

@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quản Trị Bản Quyền - OLM Solver</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: rgba(18, 24, 38, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+      color: var(--text);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    .logo-group h1 {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge-admin {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .btn-link:hover { color: #fff; }
+
+    /* Login Box */
+    .login-wrapper {
+      max-width: 420px;
+      margin: 80px auto;
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    .login-wrapper h2 {
+      margin-bottom: 8px;
+      font-size: 20px;
+    }
+    .login-wrapper p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+
+    /* Form Controls */
+    .form-group {
+      margin-bottom: 16px;
+      text-align: left;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text-muted);
+    }
+    input, select, textarea {
+      width: 100%;
+      background: rgba(10, 15, 26, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: #fff;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--primary);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+      transform: translateY(-1px);
+    }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+    .btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
+
+    /* Dashboard Layout */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .stat-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-size: 28px;
+      font-weight: 800;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Generate Box */
+    .gen-grid {
+      display: grid;
+      grid-template-columns: 2fr 1.5fr 2fr auto;
+      gap: 14px;
+      align-items: end;
+    }
+    @media (max-width: 850px) {
+      .gen-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Key result popup box */
+    .key-result-box {
+      margin-top: 20px;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 12px;
+      padding: 16px;
+      display: none;
+    }
+    .key-result-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      background: rgba(0,0,0,0.4);
+      padding: 12px;
+      border-radius: 8px;
+      margin: 10px 0;
+      white-space: pre-wrap;
+      user-select: all;
+    }
+
+    /* Table */
+    .table-responsive {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+    th {
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--card-border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      vertical-align: middle;
+    }
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .pill-active { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .pill-unused { background: rgba(59, 130, 246, 0.15); color: var(--primary); border: 1px solid rgba(59, 130, 246, 0.3); }
+    .pill-expired { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    .actions-cell {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .search-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .copy-btn {
+      background: none;
+      border: none;
+      color: var(--primary);
+      cursor: pointer;
+      font-weight: 600;
+      margin-left: 6px;
+    }
+    .copy-btn:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo-group">
+        <h1>OLM Solver <span class="badge-admin">Admin Portal</span></h1>
+      </div>
+      <div class="header-actions">
+        <a href="/" class="btn-link">← Quay lại App OLM</a>
+        <button id="btn-logout" class="btn btn-secondary btn-sm" style="display:none;" onclick="logout()">Đăng xuất</button>
+      </div>
+    </header>
+
+    <!-- Login Screen -->
+    <div id="view-login" class="login-wrapper">
+      <h2>Xác thực Quản trị</h2>
+      <p>Nhập mật khẩu quản trị viên để quản lý mã bản quyền</p>
+      <form onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label>Mật khẩu Quản trị:</label>
+          <input type="password" id="admin-pass" placeholder="Nhập mật khẩu..." required autofocus>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">Mở Bảng Điều Khiển</button>
+      </form>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="view-dashboard" style="display: none;">
+      <!-- Stats -->
+      <div class="dashboard-grid">
+        <div class="stat-card">
+          <div class="stat-title">TỔNG SỐ KEY</div>
+          <div class="stat-value" id="stat-total">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title" style="color: var(--success);">ĐANG HOẠT ĐỘNG</div>
+          <div class="stat-value" id="stat-active" style="color: var(--success);">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title" style="color: var(--primary);">CHƯA KÍCH HOẠT</div>
+          <div class="stat-value" id="stat-unused" style="color: var(--primary);">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title" style="color: var(--danger);">HẾT HẠN</div>
+          <div class="stat-value" id="stat-expired" style="color: var(--danger);">0</div>
+        </div>
+      </div>
+
+      <!-- Create Key Card -->
+      <div class="card">
+        <div class="card-title">⚡ Tạo Mã Bản Quyền Mới (Generate License Key)</div>
+        <form onsubmit="handleGenerate(event)">
+          <div class="gen-grid">
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Tên khách hàng:</label>
+              <input type="text" id="gen-name" placeholder="Ví dụ: Nguyễn Văn A..." required>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Thời hạn sử dụng:</label>
+              <select id="gen-type">
+                <option value="3_days">⚡ 3 Ngày (Dùng thử)</option>
+                <option value="1_month" selected>📅 1 Tháng (30 Ngày)</option>
+                <option value="lifetime">👑 Vĩnh viễn (Trọn đời)</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label>Ghi chú (Tùy chọn):</label>
+              <input type="text" id="gen-notes" placeholder="Facebook / Zalo...">
+            </div>
+            <button type="submit" class="btn btn-primary" style="height: 44px;">+ Tạo Key</button>
+          </div>
+        </form>
+
+        <div id="key-result" class="key-result-box">
+          <div style="font-weight: 700; color: #60a5fa; margin-bottom: 6px;">🎉 Đã tạo License Key thành công!</div>
+          <div class="key-result-text" id="key-result-content"></div>
+          <button class="btn btn-success btn-sm" onclick="copyResultText()">📋 Sao chép thông tin gửi khách</button>
+        </div>
+      </div>
+
+      <!-- License List Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>Danh Sách Người Dùng & Bản Quyền</span>
+          <button class="btn btn-secondary btn-sm" onclick="loadLicenses()">🔄 Tải lại</button>
+        </div>
+
+        <div class="search-bar">
+          <input type="text" id="search-input" placeholder="🔍 Tìm kiếm theo tên khách hàng, mã key hoặc HWID..." oninput="filterLicenses()">
+        </div>
+
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Khách hàng</th>
+                <th>Mã License Key</th>
+                <th>Gói</th>
+                <th>Trạng thái</th>
+                <th>Thời hạn còn lại</th>
+                <th>Thiết bị (HWID)</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="licenses-tbody">
+              <tr><td colspan="7" style="text-align:center; padding: 20px;">Đang tải dữ liệu...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '';
+    let currentLicenses = [];
+
+    function getAdminToken() {
+      return sessionStorage.getItem('olm_admin_token') || '';
+    }
+
+    function checkAuth() {
+      const token = getAdminToken();
+      if (token) {
+        document.getElementById('view-login').style.display = 'none';
+        document.getElementById('view-dashboard').style.display = 'block';
+        document.getElementById('btn-logout').style.display = 'inline-flex';
+        loadLicenses();
+      } else {
+        document.getElementById('view-login').style.display = 'block';
+        document.getElementById('view-dashboard').style.display = 'none';
+        document.getElementById('btn-logout').style.display = 'none';
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const pass = document.getElementById('admin-pass').value.trim();
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pass }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Mật khẩu không đúng');
+        sessionStorage.setItem('olm_admin_token', pass);
+        checkAuth();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function logout() {
+      sessionStorage.removeItem('olm_admin_token');
+      checkAuth();
+    }
+
+    async function adminFetch(url, options = {}) {
+      const token = getAdminToken();
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-Admin-Password': token,
+        ...(options.headers || {}),
+      };
+      const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+      if (res.status === 401) {
+        logout();
+        throw new Error('Hết phiên quản trị hoặc sai mật khẩu');
+      }
+      return res.json();
+    }
+
+    async function loadLicenses() {
+      try {
+        const data = await adminFetch('/api/admin/licenses');
+        if (data.ok) {
+          currentLicenses = data.licenses || [];
+          renderStats();
+          renderTable(currentLicenses);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderStats() {
+      const total = currentLicenses.length;
+      const active = currentLicenses.filter(l => l.status === 'active').length;
+      const unused = currentLicenses.filter(l => l.status === 'unused').length;
+      const expired = currentLicenses.filter(l => l.status === 'expired').length;
+
+      document.getElementById('stat-total').textContent = total;
+      document.getElementById('stat-active').textContent = active;
+      document.getElementById('stat-unused').textContent = unused;
+      document.getElementById('stat-expired').textContent = expired;
+    }
+
+    function renderTable(list) {
+      const tbody = document.getElementById('licenses-tbody');
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding: 24px; color: var(--text-muted);">Chưa có license nào được tạo.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = list.map(lic => {
+        let statusPill = `<span class="pill pill-unused">Chưa kích hoạt</span>`;
+        if (lic.status === 'active') statusPill = `<span class="pill pill-active">Đang hoạt động</span>`;
+        if (lic.status === 'expired') statusPill = `<span class="pill pill-expired">Hết hạn</span>`;
+
+        let typeText = '1 Tháng';
+        if (lic.type === '3_days') typeText = '3 Ngày';
+        if (lic.type === 'lifetime') typeText = 'Vĩnh viễn';
+
+        const deviceText = lic.hwid ? `<span title="${lic.fullHwid || ''}">${lic.hwid}</span> <div style="font-size:11px; color:var(--text-muted);">${lic.deviceInfo || ''}</div>` : '<span style="color:var(--text-muted);">Chưa kích hoạt</span>';
+
+        return `
+          <tr>
+            <td>
+              <strong style="font-size:14px;">${lic.name}</strong>
+              ${lic.notes ? `<div style="font-size:11px; color:var(--text-muted);">${lic.notes}</div>` : ''}
+            </td>
+            <td>
+              <span class="mono">${lic.key}</span>
+              <button class="copy-btn" onclick="navigator.clipboard.writeText('${lic.key}'); alert('Đã sao chép key!');">Copy</button>
+            </td>
+            <td><strong>${typeText}</strong></td>
+            <td>${statusPill}</td>
+            <td><strong>${lic.remainingText}</strong></td>
+            <td>${deviceText}</td>
+            <td>
+              <div class="actions-cell">
+                <button class="btn btn-secondary btn-sm" onclick="extendKey('${lic.key}', 30)" title="Cộng thêm 30 ngày">+30 ngày</button>
+                <button class="btn btn-secondary btn-sm" onclick="extendKey('${lic.key}', 3)" title="Cộng thêm 3 ngày">+3 ngày</button>
+                <button class="btn btn-secondary btn-sm" onclick="resetHwid('${lic.key}')" title="Cho phép khách đổi sang máy khác">🔄 Đổi máy</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteKey('${lic.key}')" title="Xóa key">🗑️</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function filterLicenses() {
+      const q = (document.getElementById('search-input').value || '').toLowerCase().trim();
+      if (!q) {
+        renderTable(currentLicenses);
+        return;
+      }
+      const filtered = currentLicenses.filter(l => 
+        (l.name && l.name.toLowerCase().includes(q)) ||
+        (l.key && l.key.toLowerCase().includes(q)) ||
+        (l.hwid && l.hwid.toLowerCase().includes(q)) ||
+        (l.notes && l.notes.toLowerCase().includes(q))
+      );
+      renderTable(filtered);
+    }
+
+    async function handleGenerate(e) {
+      e.preventDefault();
+      const name = document.getElementById('gen-name').value.trim();
+      const type = document.getElementById('gen-type').value;
+      const notes = document.getElementById('gen-notes').value.trim();
+
+      try {
+        const res = await adminFetch('/api/admin/generate', {
+          method: 'POST',
+          body: JSON.stringify({ name, type, notes }),
+        });
+        if (!res.ok) throw new Error(res.error || 'Lỗi tạo key');
+
+        let typeStr = '1 Tháng (30 Ngày)';
+        if (type === '3_days') typeStr = '3 Ngày (Dùng thử)';
+        if (type === 'lifetime') typeStr = 'Vĩnh viễn (Trọn đời)';
+
+        const msg = 
+`🎉 THÔNG TIN KÍCH HOẠT OLM SOLVER
+━━━━━━━━━━━━━━━━━━━━━━
+👤 Tên người dùng: ${name}
+🔑 Mã License Key: ${res.license.key}
+⏳ Thời hạn: ${typeStr}
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ Lưu ý:
+1. Mở ứng dụng OLM Solver trên điện thoại.
+2. Nhập chính xác Tên và Mã Key ở trên để kích hoạt.
+3. Mỗi mã bản quyền gắn với 1 điện thoại duy nhất.`;
+
+        document.getElementById('key-result-content').textContent = msg;
+        document.getElementById('key-result').style.display = 'block';
+
+        document.getElementById('gen-name').value = '';
+        document.getElementById('gen-notes').value = '';
+
+        loadLicenses();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function copyResultText() {
+      const text = document.getElementById('key-result-content').textContent;
+      navigator.clipboard.writeText(text);
+      alert('Đã sao chép toàn bộ thông tin! Bạn có thể dán để gửi ngay cho khách hàng.');
+    }
+
+    async function extendKey(key, days) {
+      if (!confirm(`Gia hạn thêm ${days} ngày cho key ${key}?`)) return;
+      try {
+        await adminFetch('/api/admin/extend', {
+          method: 'POST',
+          body: JSON.stringify({ key, days }),
+        });
+        loadLicenses();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function resetHwid(key) {
+      if (!confirm(`Reset thiết bị cho key ${key}? Khách sẽ có thể nhập key này trên điện thoại mới.`)) return;
+      try {
+        await adminFetch('/api/admin/reset-hwid', {
+          method: 'POST',
+          body: JSON.stringify({ key }),
+        });
+        alert('Đã reset thiết bị thành công! Khách có thể nhập lại key trên máy mới.');
+        loadLicenses();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteKey(key) {
+      if (!confirm(`Xóa hoàn toàn key ${key}? Hành động này không thể hoàn tác!`)) return;
+      try {
+        await adminFetch('/api/admin/delete', {
+          method: 'POST',
+          body: JSON.stringify({ key }),
+        });
+        loadLicenses();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // Init
+    checkAuth();
+  </script>
+</body>
+</html>

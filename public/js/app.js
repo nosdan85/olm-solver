@@ -32,9 +32,13 @@
     bindLogTabs();
     bindSettings();
     bindNotifications();
+    bindLicense();
     registerSW();
     connectEvents();
-    await checkSession();
+    const licOk = await checkLicense();
+    if (licOk) {
+      await checkSession();
+    }
   });
 
   // ------------------------------------------------------------- tabs
@@ -540,6 +544,7 @@
 
       // Setup homework chips for individual logs
       renderHwLogChips(state.runningHomeworks);
+      startSmartPolling(res.runId);
 
       appendLog({
         ts: Date.now(),
@@ -554,6 +559,10 @@
       switchTab('log');
     } catch (err) {
       stopBgKeepAlive();
+      stopSmartPolling();
+      if (err.code === 'NO_LICENSE' || err.code === 'INVALID_LICENSE') {
+        showLicenseModal(false, err.message);
+      }
       toast(err.message, 'error');
       appendLog({ ts: Date.now(), level: 'error', message: `Khởi chạy lỗi: ${err.message}` });
     } finally {
@@ -701,6 +710,16 @@
           }
           toast('Không kết nối được server', 'err');
         }
+      });
+    }
+
+    const cloudBtn = $('#btn-use-cloud-server');
+    if (cloudBtn && serverInput) {
+      cloudBtn.addEventListener('click', () => {
+        serverInput.value = Api.DEFAULT_CLOUD_URL;
+        Api.setServerUrl(Api.DEFAULT_CLOUD_URL);
+        toast('Đã chọn máy chủ Cloud mặc định (Render)!', 'ok');
+        connectEvents();
       });
     }
   }
@@ -921,6 +940,7 @@
         }
       } else if (data.type === 'done') {
         stopBgKeepAlive();
+        stopSmartPolling();
         setRunStatus('done');
         setStatus('Đã hoàn thành', 'on');
         const pText = $('#run-progress-text');
@@ -934,6 +954,7 @@
         appendLog({ ts: Date.now(), level: 'success', message: '🎉 Hoàn tất toàn bộ bài tập.' });
       } else if (data.type === 'error') {
         stopBgKeepAlive();
+        stopSmartPolling();
         setRunStatus('error');
         setStatus('Lỗi', 'err');
       } else if (data.type === 'scheduled') {
@@ -945,16 +966,10 @@
     };
 
     es.onerror = () => {
-      const isMobileApp = Boolean(window.Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:');
-      const hasCustomUrl = Boolean(Api.getServerUrl && Api.getServerUrl());
-      if (isMobileApp && !hasCustomUrl) {
-        setStatus('Chưa cấu hình máy chủ', 'warn');
-      } else {
-        setStatus('Mất kết nối máy chủ', 'err');
-      }
-      es.close();
+      // Reconnect silently without spamming error banners to the user
+      try { es.close(); } catch {}
       state.es = null;
-      setTimeout(connectEvents, 5000);
+      setTimeout(connectEvents, 4000);
     };
   }
 
@@ -967,5 +982,208 @@
     }).catch(() => {
       /* offline shell is optional */
     });
+  }
+
+  // ------------------------------------------------------------- license
+
+  function showLicenseModal(allowClose = false, errorMsg = '') {
+    const modal = $('#modal-license');
+    if (!modal) return;
+    const stored = Api.getStoredLicense();
+    const inName = $('#in-license-name');
+    const inKey = $('#in-license-key');
+    if (stored) {
+      if (inName && !inName.value) inName.value = stored.name || '';
+      if (inKey && !inKey.value) inKey.value = stored.key || '';
+    }
+    const alertBox = $('#license-alert');
+    if (alertBox) {
+      if (errorMsg) {
+        alertBox.textContent = errorMsg;
+        alertBox.style.display = 'block';
+      } else {
+        alertBox.style.display = 'none';
+      }
+    }
+    modal.style.display = 'flex';
+  }
+
+  function hideLicenseModal() {
+    const modal = $('#modal-license');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function renderLicenseInfo(lic) {
+    const container = $('#settings-license-info');
+    if (!container) return;
+    if (!lic || !lic.key) {
+      container.innerHTML = '<p class="muted small">Chưa kích hoạt bản quyền.</p>';
+      return;
+    }
+
+    let typeStr = '1 Tháng (30 Ngày)';
+    if (lic.type === '3_days') typeStr = '3 Ngày';
+    if (lic.type === 'lifetime') typeStr = 'Vĩnh viễn (Trọn đời)';
+
+    const isExpired = lic.status === 'expired' || (lic.expiresAt && Date.now() > lic.expiresAt);
+    const statusColor = isExpired ? 'var(--err)' : 'var(--ok)';
+    const statusText = isExpired ? 'Đã hết hạn' : 'Đang hoạt động';
+
+    container.innerHTML = `
+      <div class="license-row">
+        <span>Khách hàng:</span>
+        <span>${escapeHtml(lic.name || '')}</span>
+      </div>
+      <div class="license-row">
+        <span>Gói bản quyền:</span>
+        <span>${typeStr}</span>
+      </div>
+      <div class="license-row">
+        <span>Thời hạn còn lại:</span>
+        <span style="color: ${statusColor}">${lic.remainingText || statusText}</span>
+      </div>
+      <div class="license-row">
+        <span>Mã License:</span>
+        <span style="font-family: monospace; font-size: 11px;">${escapeHtml(lic.key || '')}</span>
+      </div>
+    `;
+  }
+
+  async function checkLicense() {
+    const lic = Api.getStoredLicense();
+    if (!lic || !lic.key) {
+      showLicenseModal(false);
+      return false;
+    }
+
+    const hwid = await Api.getDeviceHWID();
+    try {
+      const res = await Api.verifyLicense(lic.key, hwid);
+      if (res && res.ok && res.valid) {
+        Api.saveLicense(res.license);
+        renderLicenseInfo(res.license);
+        hideLicenseModal();
+        return true;
+      } else {
+        showLicenseModal(false, res?.error || 'Mã bản quyền đã hết hạn hoặc không hợp lệ.');
+        return false;
+      }
+    } catch (err) {
+      // Offline fallback: if network error, verify expiration locally
+      if (lic.expiresAt && Date.now() > lic.expiresAt) {
+        showLicenseModal(false, 'Mã bản quyền đã hết hạn sử dụng.');
+        return false;
+      }
+      renderLicenseInfo(lic);
+      hideLicenseModal();
+      return true;
+    }
+  }
+
+  function bindLicense() {
+    const btnAct = $('#btn-activate-license');
+    const inName = $('#in-license-name');
+    const inKey = $('#in-license-key');
+    const alertBox = $('#license-alert');
+
+    if (btnAct) {
+      btnAct.addEventListener('click', async () => {
+        const name = (inName?.value || '').trim();
+        const key = (inKey?.value || '').trim().toUpperCase();
+
+        if (!name || !key) {
+          if (alertBox) {
+            alertBox.textContent = 'Vui lòng nhập đầy đủ Tên người dùng và Mã License Key.';
+            alertBox.style.display = 'block';
+          }
+          return;
+        }
+
+        btnAct.disabled = true;
+        btnAct.textContent = 'Đang kích hoạt…';
+        if (alertBox) alertBox.style.display = 'none';
+
+        try {
+          const hwid = await Api.getDeviceHWID();
+          const isIOS = navigator.userAgent.includes('iPhone') || navigator.userAgent.includes('iPad');
+          const isAndroid = navigator.userAgent.includes('Android');
+          const deviceInfo = isIOS ? 'Apple iPhone' : isAndroid ? 'Android' : 'Web/Desktop';
+
+          const res = await Api.activateLicense(key, name, hwid, deviceInfo);
+          if (!res.ok) throw new Error(res.error || 'Kích hoạt thất bại');
+
+          Api.saveLicense(res.license);
+          renderLicenseInfo(res.license);
+          hideLicenseModal();
+          toast(`Kích hoạt thành công! Hạn dùng: ${res.license.remainingText}`, 'ok');
+
+          await checkSession();
+        } catch (err) {
+          if (alertBox) {
+            alertBox.textContent = err.message || 'Lỗi kích hoạt bản quyền';
+            alertBox.style.display = 'block';
+          }
+        } finally {
+          btnAct.disabled = false;
+          btnAct.textContent = 'Kích Hoạt Bản Quyền';
+        }
+      });
+    }
+
+    const btnChange = $('#btn-change-license');
+    if (btnChange) {
+      btnChange.addEventListener('click', () => {
+        showLicenseModal(true);
+      });
+    }
+  }
+
+  // ------------------------------------------------ smart polling fallback
+
+  let smartPollTimer = null;
+  function startSmartPolling(runId) {
+    if (smartPollTimer) clearInterval(smartPollTimer);
+    smartPollTimer = setInterval(async () => {
+      if (!state.runId || state.runId !== runId) {
+        clearInterval(smartPollTimer);
+        smartPollTimer = null;
+        return;
+      }
+      try {
+        const data = await Api.run(runId);
+        if (data && data.ok && data.run) {
+          const r = data.run;
+          if (Array.isArray(r.homeworks)) {
+            r.homeworks.forEach((h) => {
+              if (h.id && h.status) updateHwChipStatus(h.id, h.status);
+            });
+          }
+          if (r.status === 'done') {
+            stopSmartPolling();
+            stopBgKeepAlive();
+            setRunStatus('done');
+            setStatus('Đã hoàn thành', 'on');
+            const pText = $('#run-progress-text');
+            if (pText) pText.textContent = 'Đã hoàn thành toàn bộ bài tập!';
+            notify('OLM Solver - Hoàn tất!', 'Đã hoàn thành giải toàn bộ các bài tập OLM được chọn!');
+            toast('Đã hoàn thành toàn bộ bài tập!', 'ok');
+          } else if (r.status === 'error') {
+            stopSmartPolling();
+            stopBgKeepAlive();
+            setRunStatus('error');
+            setStatus('Lỗi', 'err');
+          }
+        }
+      } catch {
+        /* silent catch */
+      }
+    }, 2500);
+  }
+
+  function stopSmartPolling() {
+    if (smartPollTimer) {
+      clearInterval(smartPollTimer);
+      smartPollTimer = null;
+    }
   }
 })();

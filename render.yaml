@@ -8,12 +8,18 @@ services:
     autoDeploy: true
     envVars:
       - key: OPENAI_API_KEY
-        sync: false
+        value: sk-61f93586f21370754d29bd97e8f36dd7a7089c5ee15245ff21bfef3f766dfe9d
       - key: OPENAI_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai
+        value: https://sub.digishop.work/v1
       - key: OPENAI_MODEL
-        value: gemini-3.8-flash
+        value: gpt-6-luna
+      - key: OPENAI_AUTH_HEADER
+        value: bearer
+      - key: ADMIN_PASSWORD
+        value: admin@olm888
       - key: PUPPETEER_HEADLESS
         value: "true"
       - key: SESSION_SECRET
         generateValue: true
+      - key: PORT
+        value: "3000"

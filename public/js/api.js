@@ -1,20 +1,37 @@
 'use strict';
 
-// Thin API wrapper. The session token lives in localStorage; the OLM
-// password never reaches the client beyond the login request itself.
+// Thin API wrapper. The session token and license live in localStorage;
+// the OLM password never reaches the client beyond the login request itself.
 
 const Api = (() => {
   const TOKEN_KEY = 'olm.sessionId';
   const SETTINGS_KEY = 'olm.settings';
   const SERVER_URL_KEY = 'olm.serverUrl';
   const AUTH_KEY = 'olm.auth';
+  const HWID_KEY = 'olm.device_hwid';
+  const LICENSE_KEY = 'olm.license';
+
+  // URL backend mặc định khi deploy trên Render (dùng cho mobile app iOS và web Vercel)
+  const DEFAULT_CLOUD_URL = 'https://olm-solver-backend.onrender.com';
 
   function getServerUrl() {
     try {
-      return (localStorage.getItem(SERVER_URL_KEY) || '').trim().replace(/\/+$/, '');
+      const custom = (localStorage.getItem(SERVER_URL_KEY) || '').trim().replace(/\/+$/, '');
+      if (custom) return custom;
     } catch {
-      return '';
+      /* ignore */
     }
+
+    // Nếu chạy trên điện thoại (Capacitor iOS/Android) hoặc chạy trên frontend Vercel:
+    // Tự động trỏ về Cloud Render backend
+    const isNative = Boolean(window.Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:');
+    const isVercel = Boolean(window.location.hostname.includes('vercel.app'));
+
+    if (isNative || isVercel) {
+      return DEFAULT_CLOUD_URL;
+    }
+
+    return '';
   }
 
   function setServerUrl(value) {
@@ -23,6 +40,51 @@ const Api = (() => {
       else localStorage.removeItem(SERVER_URL_KEY);
     } catch {
       /* storage unavailable */
+    }
+  }
+
+  async function getDeviceHWID() {
+    try {
+      let hwid = localStorage.getItem(HWID_KEY);
+      if (hwid) return hwid;
+
+      if (window.Capacitor?.Plugins?.Device) {
+        try {
+          const idInfo = await window.Capacitor.Plugins.Device.getId();
+          if (idInfo && idInfo.identifier) {
+            hwid = 'ios_' + idInfo.identifier;
+            localStorage.setItem(HWID_KEY, hwid);
+            return hwid;
+          }
+        } catch {}
+      }
+
+      const randomPart = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      hwid = randomPart;
+      localStorage.setItem(HWID_KEY, hwid);
+      return hwid;
+    } catch {
+      return 'device_' + Date.now();
+    }
+  }
+
+  function getStoredLicense() {
+    try {
+      const raw = localStorage.getItem(LICENSE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveLicense(lic) {
+    try {
+      if (lic) localStorage.setItem(LICENSE_KEY, JSON.stringify(lic));
+      else localStorage.removeItem(LICENSE_KEY);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -81,6 +143,12 @@ const Api = (() => {
     const t = token();
     if (t) opts.headers['X-Session-Id'] = t;
 
+    const lic = getStoredLicense();
+    if (lic && lic.key) {
+      opts.headers['X-License-Key'] = lic.key;
+      opts.headers['X-Device-HWID'] = lic.hwid || '';
+    }
+
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -94,7 +162,7 @@ const Api = (() => {
       res = await fetch(finalUrl, opts);
     } catch (err) {
       const target = serverUrl ? `tới máy chủ (${serverUrl})` : 'tới máy chủ';
-      throw new Error(`Không kết nối được ${target}. Kiểm tra kết nối mạng hoặc địa chỉ IP máy chủ.`);
+      throw new Error(`Không kết nối được ${target}. Kiểm tra kết nối mạng hoặc địa chỉ máy chủ.`);
     }
 
     const text = await res.text();
@@ -112,6 +180,7 @@ const Api = (() => {
       const error = new Error(message);
       error.status = res.status;
       error.code = data.code;
+      error.expired = data.expired;
       throw error;
     }
 
@@ -123,6 +192,10 @@ const Api = (() => {
     setToken,
     getServerUrl,
     setServerUrl,
+    DEFAULT_CLOUD_URL,
+    getDeviceHWID,
+    getStoredLicense,
+    saveLicense,
     saveCredentials,
     getCredentials,
     clearCredentials,
@@ -137,6 +210,12 @@ const Api = (() => {
     run: (runId) => request(`/api/run/${runId}`),
     runs: () => request('/api/runs'),
     submit: (payload) => request('/api/submit', { method: 'POST', body: payload }),
+
+    // License API
+    activateLicense: (key, name, hwid, deviceInfo) =>
+      request('/api/license/activate', { method: 'POST', body: { key, name, hwid, deviceInfo } }),
+    verifyLicense: (key, hwid) =>
+      request('/api/license/verify', { method: 'POST', body: { key, hwid } }),
 
     loadSettings() {
       try {

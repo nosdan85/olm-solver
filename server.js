@@ -8,6 +8,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 
 const sessionStore = require('./src/session-store');
+const licenseStore = require('./src/license-store');
 const { OlmClient } = require('./src/olm-client');
 const answerEngine = require('./src/answer-engine');
 const browserEngine = require('./src/browser-engine');
@@ -17,8 +18,13 @@ const H = require('./src/humanize');
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin@olm888';
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Session-Id', 'X-License-Key', 'X-Device-HWID', 'X-Admin-Password', 'X-Admin-Token'],
+}));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -26,7 +32,7 @@ app.use(
   '/api',
   rateLimit({
     windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60000),
-    max: Number(process.env.RATE_LIMIT_MAX || 60),
+    max: Number(process.env.RATE_LIMIT_MAX || 120),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, slow down.' },
@@ -46,6 +52,41 @@ function requireSession(req, res, next) {
   }
   req.olmSession = session;
   req.olmClient = OlmClient.fromSerialized(session.cookieJar, session.ua);
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const token = req.get('X-Admin-Token') || req.get('X-Admin-Password') || req.query.adminKey || (req.body && req.body.adminKey);
+  if (!token || token !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Mật khẩu quản trị không đúng hoặc chưa được cung cấp.', code: 'UNAUTHORIZED' });
+  }
+  next();
+}
+
+function requireLicense(req, res, next) {
+  if (process.env.ENFORCE_LICENSE === 'false') {
+    return next();
+  }
+  const key = req.get('X-License-Key') || req.query.licenseKey || (req.body && req.body.licenseKey);
+  const hwid = req.get('X-Device-HWID') || req.query.hwid || (req.body && req.body.hwid);
+
+  if (!key || !hwid) {
+    return res.status(403).json({
+      error: 'Yêu cầu kích hoạt bản quyền để sử dụng tính năng giải bài tập.',
+      code: 'NO_LICENSE',
+    });
+  }
+
+  const result = licenseStore.verify({ key, hwid });
+  if (!result.ok || !result.valid) {
+    return res.status(403).json({
+      error: result.error || 'Bản quyền không hợp lệ hoặc đã hết hạn.',
+      code: 'INVALID_LICENSE',
+      expired: result.expired || false,
+    });
+  }
+
+  req.license = result.license;
   next();
 }
 
@@ -123,8 +164,82 @@ app.post('/api/answer', async (req, res) => {
   }
 });
 
+// --- License endpoints (Public) ---
+
+app.post('/api/license/activate', (req, res) => {
+  const { key, name, hwid, deviceInfo } = req.body || {};
+  const result = licenseStore.activate({ key, name, hwid, deviceInfo });
+  if (!result.ok) {
+    return res.status(400).json(result);
+  }
+  res.json(result);
+});
+
+app.post('/api/license/verify', (req, res) => {
+  const { key, hwid } = req.body || {};
+  const result = licenseStore.verify({ key, hwid });
+  if (!result.ok || !result.valid) {
+    return res.status(403).json(result);
+  }
+  res.json(result);
+});
+
+// --- Admin endpoints (Protected) ---
+
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Mật khẩu quản trị không đúng' });
+  }
+  res.json({ ok: true, token: ADMIN_PASSWORD, message: 'Đăng nhập thành công' });
+});
+
+app.get('/api/admin/licenses', requireAdmin, (req, res) => {
+  res.json({ ok: true, licenses: licenseStore.listAll() });
+});
+
+app.post('/api/admin/generate', requireAdmin, (req, res) => {
+  const { name, type, notes } = req.body || {};
+  try {
+    const lic = licenseStore.createKey({ name, type, notes });
+    res.json({ ok: true, license: lic });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/extend', requireAdmin, (req, res) => {
+  const { key, days } = req.body || {};
+  try {
+    const lic = licenseStore.extendKey(key, days || 30);
+    res.json({ ok: true, license: lic });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/reset-hwid', requireAdmin, (req, res) => {
+  const { key } = req.body || {};
+  try {
+    const lic = licenseStore.resetHwid(key);
+    res.json({ ok: true, license: lic });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/delete', requireAdmin, (req, res) => {
+  const { key } = req.body || {};
+  try {
+    const ok = licenseStore.deleteKey(key);
+    res.json({ ok, message: 'Đã xóa key' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Start a run over the selected homeworks.
-app.post('/api/run', requireSession, async (req, res) => {
+app.post('/api/run', requireLicense, requireSession, async (req, res) => {
   const { homeworks, config } = req.body || {};
   if (!Array.isArray(homeworks) || homeworks.length === 0) {
     return res.status(400).json({ error: 'No homeworks selected' });

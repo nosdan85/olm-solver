@@ -232,16 +232,25 @@
     </div>
 
     <div class="settings-group">
-      <h2>Máy chủ Backend (iOS App / LAN)</h2>
-      <p class="muted small">Khi cài IPA trên iPhone hoặc mở qua mạng nội bộ, nhập URL máy chủ backend (VD: <code>http://192.168.1.15:3000</code> hoặc domain VPS). Để trống nếu chạy trực tiếp.</p>
+      <h2>Bản quyền ứng dụng</h2>
+      <div id="settings-license-info" class="license-info-box">
+        <p class="muted small">Đang kiểm tra thông tin bản quyền...</p>
+      </div>
+      <button class="btn btn-ghost btn-block" id="btn-change-license" style="margin-top: 10px;">Nhập Mã Bản Quyền Mới</button>
+    </div>
+
+    <div class="settings-group">
+      <h2>Máy chủ Backend (Cloud & LAN)</h2>
+      <p class="muted small">Mặc định ứng dụng tự động kết nối máy chủ Cloud trên Render. Bạn có thể sử dụng ở bất kỳ đâu (4G, WiFi ngoài) mà không cần cấu hình IP.</p>
       <label class="field">
         <span>Địa chỉ Server Backend</span>
-        <input id="in-server-url" type="url" placeholder="http://192.168.1.x:3000" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <input id="in-server-url" type="url" placeholder="https://olm-solver-backend.onrender.com" autocapitalize="off" autocorrect="off" spellcheck="false">
       </label>
       <div style="display:flex; gap:8px; margin-top:8px;">
         <button class="btn btn-primary" id="btn-save-server" style="flex:1">Lưu địa chỉ</button>
-        <button class="btn btn-ghost" id="btn-test-server">Kiểm tra kết nối</button>
+        <button class="btn btn-ghost" id="btn-test-server">Kiểm tra</button>
       </div>
+      <button class="btn btn-secondary btn-sm btn-block" id="btn-use-cloud-server" style="margin-top:8px;">⚡ Dùng Máy Chủ Cloud Mặc Định</button>
       <p class="muted small" id="server-test-result" style="margin-top:6px;"></p>
     </div>
 
@@ -278,12 +287,45 @@
 
 </div>
 
+<!-- -------------------------------------------------- License Lock Modal -->
+<div id="modal-license" class="modal-overlay" style="display: none;">
+  <div class="modal-card">
+    <div style="font-size: 38px; text-align: center; margin-bottom: 8px;">🔒</div>
+    <h2 style="font-size: 20px; text-align: center; margin-bottom: 6px; font-weight: 800;">Kích Hoạt Bản Quyền</h2>
+    <p class="muted" style="text-align: center; font-size: 13px; line-height: 1.5; margin-bottom: 20px;">
+      Ứng dụng yêu cầu kích hoạt bản quyền trước khi sử dụng. Mỗi mã bản quyền gắn liền với 1 điện thoại duy nhất.
+    </p>
+
+    <div style="margin-bottom: 12px;">
+      <label class="field">
+        <span>Tên người dùng (như lúc đăng ký)</span>
+        <input id="in-license-name" type="text" placeholder="Ví dụ: Nguyễn Văn A" autocomplete="name" autocapitalize="words">
+      </label>
+    </div>
+
+    <div style="margin-bottom: 14px;">
+      <label class="field">
+        <span>Mã License Key</span>
+        <input id="in-license-key" type="text" placeholder="OLM-30D-XXXX-YYYY" autocapitalize="characters" spellcheck="false" style="font-family: monospace; letter-spacing: 1px; font-weight: 700;">
+      </label>
+    </div>
+
+    <div id="license-alert" class="alert alert-error" style="display: none; margin-bottom: 14px;"></div>
+
+    <button class="btn btn-primary btn-block" id="btn-activate-license" style="height: 44px; font-size: 15px;">Kích Hoạt Bản Quyền</button>
+
+    <p class="muted small" style="text-align: center; margin-top: 14px; font-size: 12px; line-height: 1.4;">
+      Chưa có key hoặc key hết hạn? Vui lòng liên hệ Admin để nhận mã kích hoạt.
+    </p>
+  </div>
+</div>
+
 <!-- Backwards compatibility fallback anchors for stale scripts -->
 <span id="hw-count" style="display:none;"></span>
 <button id="btn-stop" style="display:none;"></button>
 
-<script src="js/api.js?v=20261102c"></script>
-<script src="js/ui.js?v=20261102c"></script>
-<script src="js/app.js?v=20261102c"></script>
+<script src="js/api.js?v=20261102d"></script>
+<script src="js/ui.js?v=20261102d"></script>
+<script src="js/app.js?v=20261102d"></script>
 </body>
 </html>

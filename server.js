@@ -333,6 +333,15 @@ app.post('/api/admin/delete', requireAdmin, (req, res) => {
   }
 });
 
+app.post('/api/admin/clear-all', requireAdmin, (req, res) => {
+  try {
+    licenseStore.clearAll();
+    res.json({ ok: true, message: 'Đã xóa toàn bộ danh sách bản quyền' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/licenses/export', requireAdmin, (req, res) => {
   const data = licenseStore.exportAll();
   res.setHeader('Content-Disposition', `attachment; filename="olm_licenses_backup_${Date.now()}.json"`);

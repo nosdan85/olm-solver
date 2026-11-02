@@ -17,6 +17,8 @@ test('license-store generates 3-day, 1-month and lifetime keys', () => {
   const kLife = licenseStore.createKey({ name: 'Le Van C', type: 'lifetime' });
   assert.ok(kLife.key.startsWith('OLM-LIFE-'));
   assert.equal(kLife.type, 'lifetime');
+
+  licenseStore.clearAll();
 });
 
 test('activation binds HWID and name', () => {

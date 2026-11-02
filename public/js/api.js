@@ -146,7 +146,9 @@ const Api = (() => {
     const lic = getStoredLicense();
     if (lic && lic.key) {
       opts.headers['X-License-Key'] = lic.key;
-      opts.headers['X-Device-HWID'] = lic.hwid || '';
+      let devHwid = '';
+      try { devHwid = localStorage.getItem(HWID_KEY) || lic.hwid || ''; } catch {}
+      opts.headers['X-Device-HWID'] = devHwid;
     }
 
     if (body !== undefined) {

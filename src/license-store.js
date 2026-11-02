@@ -148,7 +148,8 @@ function getPublicInfo(lic) {
     expiresAt: lic.expiresAt,
     status,
     remainingText: formatRemaining(lic.expiresAt),
-    hwid: lic.hwid ? `${lic.hwid.slice(0, 8)}...${lic.hwid.slice(-6)}` : null,
+    hwid: lic.hwid || null,
+    hwidMasked: lic.hwid ? `${lic.hwid.slice(0, 8)}...${lic.hwid.slice(-6)}` : null,
     deviceInfo: lic.deviceInfo,
     notes: lic.notes,
   };
@@ -243,7 +244,15 @@ function verify({ key, hwid }) {
     return { ok: false, valid: false, error: 'Mã bản quyền đã bị thu hồi' };
   }
 
-  if (!lic.hwid || lic.hwid !== hwid.trim()) {
+  const trimmedHwid = String(hwid).trim();
+  const matches = (lic.hwid === trimmedHwid) ||
+    (trimmedHwid.includes('...') && lic.hwid && lic.hwid.startsWith(trimmedHwid.split('...')[0]) && lic.hwid.endsWith(trimmedHwid.split('...')[1]));
+
+  if (!lic.hwid) {
+    lic.hwid = trimmedHwid;
+    lic.status = 'active';
+    persist();
+  } else if (!matches) {
     return {
       ok: false,
       valid: false,
@@ -375,6 +384,12 @@ function importAll(data, { merge = true } = {}) {
   return { count, total: licenses.size };
 }
 
+function clearAll() {
+  licenses.clear();
+  persist();
+  return true;
+}
+
 // Auto-load on require
 load();
 
@@ -386,6 +401,7 @@ module.exports = {
   extendKey,
   resetHwid,
   deleteKey,
+  clearAll,
   formatRemaining,
   exportAll,
   importAll,

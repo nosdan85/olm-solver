@@ -16,6 +16,7 @@ const runner = require('./src/runner');
 const H = require('./src/humanize');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin@olm888';

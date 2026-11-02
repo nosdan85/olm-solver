@@ -128,10 +128,33 @@ async function testProxy(rawStr) {
   };
 }
 
+function createAxiosClient(jar) {
+  const axios = require('axios');
+  const p = parseProxy();
+  if (p) {
+    const { createCookieAgent } = require('http-cookie-agent/http');
+    const { HttpsProxyAgent } = require('https-proxy-agent');
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+
+    const AgentClass = p.protocol.startsWith('socks') ? SocksProxyAgent : HttpsProxyAgent;
+    const CookieAgentClass = createCookieAgent(AgentClass);
+    const agent = new CookieAgentClass(p.url, { cookies: { jar } });
+
+    return axios.create({
+      httpsAgent: agent,
+      httpAgent: agent,
+    });
+  }
+
+  const { wrapper } = require('axios-cookiejar-support');
+  return wrapper(axios.create({ jar, withCredentials: true }));
+}
+
 module.exports = {
   getRuntimeProxy,
   saveStoredProxy,
   parseProxy,
   getAxiosAgent,
+  createAxiosClient,
   testProxy,
 };

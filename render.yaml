@@ -24,4 +24,4 @@ services:
       - key: PORT
         value: "3000"
       - key: PROXY_URL
-        value: ""
+        value: "171.241.8.179:18918:mikonkhanh:abc123@123"

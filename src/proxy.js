@@ -51,10 +51,10 @@ function parseProxy(rawStr) {
   const str = String(rawStr !== undefined ? rawStr : getRuntimeProxy() || '').trim();
   if (!str) return null;
 
-  // Handle format host:port:user:pass
-  const parts = str.split(':');
-  if (parts.length === 4 && !str.includes('@') && !str.includes('//')) {
-    const [host, port, user, pass] = parts;
+  // Handle format host:port:user:pass (where pass may contain '@' or other special characters)
+  const colonMatch = str.match(/^([a-zA-Z0-9.-]+):(\d+):([^:]+):(.+)$/);
+  if (colonMatch) {
+    const [, host, port, user, pass] = colonMatch;
     return {
       raw: str,
       protocol: 'http:',

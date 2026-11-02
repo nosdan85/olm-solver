@@ -1,1 +1,17 @@
-{}
+{
+  "OLM-3D-F03E75-47206C": {
+    "key": "OLM-3D-F03E75-47206C",
+    "name": "ok",
+    "nameNormalized": "ok",
+    "type": "3_days",
+    "durationDays": 3,
+    "createdAt": 1793575000000,
+    "activatedAt": 1793608000000,
+    "expiresAt": 1793867200000,
+    "hwid": null,
+    "deviceInfo": "Web Client",
+    "status": "active",
+    "notes": "User key",
+    "lastChecked": null
+  }
+}

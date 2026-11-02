@@ -506,7 +506,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
       const chips = document.querySelectorAll('.tw-olm-chip-question');
       if (chips[i] && !chips[i].classList.contains('tw-selected')) chips[i].click();
     }, index);
-    await H.sleep(H.randInt(300, 450));
+    await H.sleep(H.randInt(80, 150));
     const question = await scanCurrentQuestion(page, index, homework.subject, log);
     question.scanStatus = question.text || question.imageBase64 ? 'scanned' : 'unresolved';
     questions.push(question);
@@ -523,7 +523,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   const answerEngine = require('./answer-engine');
   const textQuestions = questions.filter((q) => !q.hasImage && q.scanStatus === 'scanned');
   const imageQuestions = questions.filter((q) => q.hasImage && q.scanStatus === 'scanned');
-  const batchSize = Math.max(1, Number(config.aiBatchSize || process.env.AI_BATCH_SIZE || 6));
+  const batchSize = Math.max(1, Number(config.aiBatchSize || process.env.AI_BATCH_SIZE || 5));
   const answers = new Map();
   const batches = [];
   for (let i = 0; i < textQuestions.length; i += batchSize) batches.push(textQuestions.slice(i, i + batchSize));
@@ -642,18 +642,11 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
       questionStatuses.set(question.id, 'filled');
         const optLetter = planned.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + planned.correctIndex)}]` : '';
         const chosenText = optLetter ? `${optLetter} ${planned.answer || ''}` : (planned.answer || 'Đã chọn');
-        log('info', `✍ Đã điền Câu ${question.index + 1}/${questions.length}: ${chosenText}`);
+        log('info', `✍ Đã chọn đáp án Câu ${question.index + 1}/${questions.length}: ${chosenText}`);
     }
 
-    // Click #btn-done ("Kiểm tra đáp án" / "Lưu đáp án" trên OLM)
-    await page.evaluate(() => {
-      const btn = document.getElementById('btn-done') ||
-                  document.querySelector('.btn-done, button.btn-done, button[id*="done"]');
-      if (btn && !btn.disabled) btn.click();
-    });
-
     emit?.('fill-progress', { completed: filled + failed, filled, failed, total: questions.length });
-    await H.sleep(H.randInt(100, 180));
+    await H.sleep(H.randInt(50, 100));
   }
   emit?.('fill-complete', { filled, failed, total: questions.length });
 
@@ -1120,19 +1113,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       }
     }
 
-    // 3. Kiểm tra xem có phải là bài luyện tập theo chủ đề không (/chu-de/ hoặc có nút "Kiểm tra đáp án")
-    const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
-    const hasCheckBtn = await page.evaluate(() => {
-      const allBtns = Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button]'));
-      return allBtns.some((b) => /kiểm tra đáp án/i.test(b.innerText || b.value || ''));
-    });
-
-    if (isChuDeUrl || hasCheckBtn) {
-      if (log) log('info', 'Phát hiện bài luyện tập theo chủ đề (từng câu một) -> Giải theo luồng Flow Practice...');
-      return await solveFlowPractice(page, { homework, config, log, emit, signal });
-    }
-
-    // 4. Kiểm tra xem có chip câu hỏi trắc nghiệm hiện đại không (.tw-olm-chip-question)
+    // 3. ƯU TIÊN 1: Kiểm tra xem có chip câu hỏi trắc nghiệm không (.tw-olm-chip-question)
     let chipsCount = 0;
     try {
       await page.waitForSelector('.tw-olm-chip-question', { timeout: 3500 });
@@ -1142,8 +1123,20 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
     }
 
     if (chipsCount > 0) {
-      if (log) log('info', `Giao diện bài thi trắc nghiệm (${chipsCount} câu) -> Bắt đầu giải siêu tốc...`);
+      if (log) log('info', `Phát hiện bài thi trắc nghiệm (${chipsCount} câu) -> Bắt đầu nạp nhanh, giải AI theo nhóm 5 câu và nộp bài tổng thể...`);
       return await solveModernQuiz(page, { homework, config, log, emit, signal });
+    }
+
+    // 4. Nếu không có chip danh sách câu hỏi: Kiểm tra giao diện luyện tập tương tác sinh câu hỏi động từng câu
+    const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
+    const hasCheckBtn = await page.evaluate(() => {
+      const allBtns = Array.from(document.querySelectorAll('button, a.btn, input[type=submit], div[role=button]'));
+      return allBtns.some((b) => /kiểm tra đáp án/i.test(b.innerText || b.value || ''));
+    });
+
+    if (isChuDeUrl || hasCheckBtn) {
+      if (log) log('info', 'Bài tập luyện tập tương tác sinh câu hỏi động -> Giải theo luồng Flow Practice...');
+      return await solveFlowPractice(page, { homework, config, log, emit, signal });
     }
 
     // 5. Check if this is the modern OLM step-by-step flow practice interface

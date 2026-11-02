@@ -101,6 +101,24 @@ const UI = (() => {
     list.scrollTop = list.scrollHeight;
   }
 
+  function syncLogs(serverLogs) {
+    if (!Array.isArray(serverLogs) || !serverLogs.length) return;
+    const seen = new Set(logBuffer.slice(-300).map(e => `${e.ts}_${e.message}`));
+    let added = false;
+    for (const item of serverLogs) {
+      const k = `${item.ts}_${item.message}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        logBuffer.push(item);
+        if (logBuffer.length > 2000) logBuffer.shift();
+        added = true;
+      }
+    }
+    if (added) {
+      setLogFilter(currentLogFilter);
+    }
+  }
+
   function clearLog() {
     logBuffer.length = 0;
     const list = logList();
@@ -241,6 +259,7 @@ const UI = (() => {
     formatDateTime,
     debounce,
     appendLog,
+    syncLogs,
     clearLog,
     setLogFilter,
     setStatus,

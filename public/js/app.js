@@ -1491,6 +1491,10 @@
               if (h.id && h.status) updateHwChipStatus(h.id, h.status);
             });
           }
+          // Sync all server logs into the UI buffer so log is never lost or frozen
+          if (Array.isArray(r.logs) && r.logs.length > 0) {
+            Ui.syncLogs(r.logs);
+          }
           if (r.status === 'done') {
             stopSmartPolling();
             stopBgKeepAlive();

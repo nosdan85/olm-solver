@@ -497,10 +497,12 @@ app.get('/api/events', (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.write(': connected\n\n');
+  if (res.flush) res.flush();
 
   const send = (evt) => {
     try {
       res.write(`data: ${JSON.stringify(evt)}\n\n`);
+      if (res.flush) res.flush();
     } catch {
       /* client vanished */
     }
@@ -510,10 +512,11 @@ app.get('/api/events', (req, res) => {
   const ping = setInterval(() => {
     try {
       res.write(': ping\n\n');
+      if (res.flush) res.flush();
     } catch {
       /* ignore */
     }
-  }, 20000);
+  }, 10000);
 
   req.on('close', () => {
     clearInterval(ping);

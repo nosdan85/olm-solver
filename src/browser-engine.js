@@ -777,10 +777,20 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
           if (log) log('info', 'Phát hiện màn hình bài cũ, đang nhấn "Luyện tập lại"...');
           await H.sleep(1200);
           await page.evaluate(() => {
+            const popupBtn = document.querySelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm');
+            if (popupBtn) {
+              popupBtn.click();
+              popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+              return;
+            }
             const cBtn = Array.from(document.querySelectorAll('button, a, div, span')).find((b) =>
-              /^(xác nhận|đồng ý)$/i.test((b.innerText || '').trim())
+              /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || '').trim())
             );
-            if (cBtn) (cBtn.closest('button, a, div[role=button]') || cBtn).click();
+            if (cBtn) {
+              const clickable = cBtn.closest('button, a, div[role=button]') || cBtn;
+              clickable.click();
+              clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            }
           });
           await H.sleep(2000);
           question = await scanCurrentQuestion(page, 0, homework.subject, log);
@@ -997,7 +1007,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
     const hasRedoButton = await page.evaluate(() => {
       const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
       if (byId && (byId.offsetWidth > 0 || byId.offsetHeight > 0)) return true;
-      const candidates = Array.from(document.querySelectorAll('button, a, div[role=button], span, p')).filter((el) => {
+      const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
         const text = (el.innerText || el.textContent || '').trim();
         const isVis = el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
         return isVis && /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text);
@@ -1049,7 +1059,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
 
         // Nhấn nút "Xác nhận" trên popup
         await page.evaluate(() => {
-          const popupBtn = document.querySelector('.popup-primary-button');
+          const popupBtn = document.querySelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm');
           if (popupBtn) {
             popupBtn.click();
             popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -1070,7 +1080,13 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         if (log) log('info', 'Đã xác nhận làm lại bài, đang nạp câu hỏi mới...');
 
         // Chờ modal đóng và màn hình kết quả biến mất, câu hỏi mới nạp
-        await H.sleep(2500);
+        await page.waitForFunction(() => {
+          const hasQuiz = document.querySelector('type-quiz-x-mobile, type-quiz-x, default-root, #question-container, .question-container');
+          const hasCheckBtn = Array.from(document.querySelectorAll('button, a.btn, input[type=submit]')).some(b => /kiểm tra đáp án/i.test(b.innerText || b.value || ''));
+          const redoStillVisible = !!(document.getElementById('btn-redo-practice') || Array.from(document.querySelectorAll('button, a, div, span')).some(el => /^(luyện tập lại)$/i.test((el.innerText || '').trim()) && (el.offsetWidth > 0 || el.offsetHeight > 0)));
+          return (hasQuiz || hasCheckBtn) && !redoStillVisible;
+        }, { timeout: 8000 }).catch(() => {});
+        await H.sleep(1500);
       }
     }
 

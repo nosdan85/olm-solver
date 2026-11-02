@@ -38,6 +38,17 @@ function emit(runId, type, payload = {}) {
   bus.emit('run-event', { runId, type, ts: Date.now(), ...payload });
 }
 
+function subscribe(fn) {
+  const onLog = (data) => fn(data);
+  const onEvent = (data) => fn(data);
+  bus.on('log', onLog);
+  bus.on('run-event', onEvent);
+  return () => {
+    bus.off('log', onLog);
+    bus.off('run-event', onEvent);
+  };
+}
+
 // --------------------------------------------------------------- Scheduling
 
 // Schedule a submit at a specific moment. The promise resolves when the

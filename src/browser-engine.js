@@ -799,6 +799,15 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
     }
 
     if (!question || (!question.text && !question.imageBase64)) {
+      if (step === 0) {
+        const isResultScreen = await page.evaluate(() => {
+          const text = document.body ? document.body.innerText || '' : '';
+          return /đừng nản lòng|kết quả luyện tập|kết quả bài làm|chúc mừng bạn đã hoàn thành|bạn không có quyền xóa/i.test(text);
+        });
+        if (isResultScreen) {
+          throw new Error('Bài tập vẫn đang ở màn hình kết quả cũ và OLM không thể nạp câu hỏi mới (Giáo viên đã khóa bài tập này hoặc không cho phép học sinh tự xóa bài để làm lại).');
+        }
+      }
       if (log) log('info', `Không còn câu hỏi tiếp theo, hoàn tất bài tập.`);
       break;
     }
@@ -1065,28 +1074,49 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
             popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
             return;
           }
-          const confirmBtns = Array.from(document.querySelectorAll('button, a, div, span')).filter((b) =>
-            /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || b.textContent || '').trim()) &&
-            !b.classList.contains('btn-submit-cate')
-          );
-          if (confirmBtns.length > 0) {
-            const btn = confirmBtns[confirmBtns.length - 1];
-            const clickable = btn.closest('button, a, div[role=button]') || btn;
-            clickable.click();
-            clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const visibleModals = Array.from(document.querySelectorAll('.main-modal-v2, .swal2-container, .modal, div[role=dialog]'))
+            .filter(m => (m.offsetWidth > 0 || m.offsetHeight > 0) && !m.classList.contains('tw-hidden'));
+          
+          for (const m of visibleModals) {
+            const btn = Array.from(m.querySelectorAll('button, a, div[role=button], span')).find(b =>
+              /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || b.textContent || '').trim())
+            );
+            if (btn) {
+              const clickable = btn.closest('button, a, div[role=button]') || btn;
+              clickable.click();
+              clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+              return;
+            }
           }
         });
 
-        if (log) log('info', 'Đã xác nhận làm lại bài, đang nạp câu hỏi mới...');
+        if (log) log('info', 'Đã xác nhận làm lại bài, đang kiểm tra phản hồi từ OLM...');
+        await H.sleep(1500);
+
+        // Kiểm tra xem OLM có từ chối làm lại bài không (ví dụ: "Bạn không có quyền xóa bài làm này!")
+        const redoBlockedReason = await page.evaluate(() => {
+          const bodyText = document.body ? document.body.innerText || '' : '';
+          const match = bodyText.match(/Bạn không có quyền xóa bài làm này|không được phép làm lại|hết số lần làm bài|không thể làm lại/i);
+          if (match) return match[0];
+          const errorToast = document.querySelector('.swal2-html-container, .toast-error, .tw-text-error-default, .alert-danger, [role=alert]');
+          if (errorToast && /không có quyền|không thể|thất bại|lỗi/i.test(errorToast.innerText)) {
+            return errorToast.innerText.trim();
+          }
+          return null;
+        });
+
+        if (redoBlockedReason) {
+          throw new Error(`OLM từ chối làm lại bài: "${redoBlockedReason}" (Giáo viên đã cài đặt khóa bài tập này, không cho phép học sinh tự xóa dữ liệu để luyện tập lại).`);
+        }
 
         // Chờ modal đóng và màn hình kết quả biến mất, câu hỏi mới nạp
         await page.waitForFunction(() => {
           const hasQuiz = document.querySelector('type-quiz-x-mobile, type-quiz-x, default-root, #question-container, .question-container');
           const hasCheckBtn = Array.from(document.querySelectorAll('button, a.btn, input[type=submit]')).some(b => /kiểm tra đáp án/i.test(b.innerText || b.value || ''));
-          const redoStillVisible = !!(document.getElementById('btn-redo-practice') || Array.from(document.querySelectorAll('button, a, div, span')).some(el => /^(luyện tập lại)$/i.test((el.innerText || '').trim()) && (el.offsetWidth > 0 || el.offsetHeight > 0)));
+          const redoStillVisible = !!(document.getElementById('btn-redo-practice') || Array.from(document.querySelectorAll('button, a, div, span')).some(el => /^(luyện tập lại|làm lại bài)$/i.test((el.innerText || '').trim()) && (el.offsetWidth > 0 || el.offsetHeight > 0)));
           return (hasQuiz || hasCheckBtn) && !redoStillVisible;
         }, { timeout: 8000 }).catch(() => {});
-        await H.sleep(1500);
+        await H.sleep(1000);
       }
     }
 

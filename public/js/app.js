@@ -169,6 +169,7 @@
       try {
         const res = await Api.loginWithCookie(cookie);
         Api.setToken(res.sessionId);
+        if (Api.saveCookie) Api.saveCookie(cookie);
         state.currentUser = res.username || 'Học sinh OLM';
         updateSessionDisplay(state.currentUser);
 
@@ -250,6 +251,7 @@
 
     // 2. Persistent Login: If session expired on server but credentials are saved, auto-relogin silently
     const creds = Api.getCredentials ? Api.getCredentials() : null;
+    const savedCookie = Api.getCookie ? Api.getCookie() : null;
     if (creds && creds.username && creds.password) {
       try {
         setStatus('Đang khôi phục phiên OLM…', 'busy');
@@ -265,6 +267,22 @@
         return;
       } catch (err) {
         console.warn('Auto-relogin failed:', err.message);
+      }
+    } else if (savedCookie) {
+      try {
+        setStatus('Đang khôi phục phiên OLM…', 'busy');
+        const res = await Api.loginWithCookie(savedCookie);
+        Api.setToken(res.sessionId);
+        state.currentUser = res.username || 'Học sinh OLM';
+        updateSessionDisplay(state.currentUser);
+        setStatus(`Đã đăng nhập: ${state.currentUser}`, 'on');
+        appendLog({ ts: Date.now(), level: 'success', message: `Tự động khôi phục phiên (${state.currentUser})` });
+        updateAuthTabs(true);
+        switchTab('homework');
+        await refreshHomeworks();
+        return;
+      } catch (err) {
+        console.warn('Auto-cookie-relogin failed:', err.message);
       }
     }
 
@@ -645,6 +663,10 @@
       stopSmartPolling();
       if (err.code === 'NO_LICENSE' || err.code === 'INVALID_LICENSE') {
         showLicenseModal(false, err.message);
+      } else if (err.code === 'NO_SESSION' || err.code === 'NO_TOKEN') {
+        toast('Phiên OLM đã hết hạn (do máy chủ vừa khởi động lại). Vui lòng đăng nhập lại.', 'warn');
+        updateAuthTabs(false);
+        switchTab('login');
       }
       toast(err.message, 'error');
       appendLog({ ts: Date.now(), level: 'error', message: `Khởi chạy lỗi: ${err.message}` });

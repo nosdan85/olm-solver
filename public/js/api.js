@@ -126,15 +126,33 @@ const Api = (() => {
     }
   }
 
+  const COOKIE_KEY = 'olm.cookie';
+
+  function saveCookie(cookie) {
+    try {
+      if (cookie) localStorage.setItem(COOKIE_KEY, cookie);
+      else localStorage.removeItem(COOKIE_KEY);
+    } catch {}
+  }
+
+  function getCookie() {
+    try {
+      return localStorage.getItem(COOKIE_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
   function clearCredentials() {
     try {
       localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(COOKIE_KEY);
     } catch {
       /* storage unavailable */
     }
   }
 
-  async function request(path, { method = 'GET', body, headers = {} } = {}) {
+  async function request(path, { method = 'GET', body, headers = {}, _isRetry = false } = {}) {
     const opts = {
       method,
       headers: { ...headers },
@@ -178,6 +196,26 @@ const Api = (() => {
     }
 
     if (!res.ok) {
+      // Auto-relogin silently if session expired on server
+      if (res.status === 401 && (data.code === 'NO_SESSION' || data.code === 'NO_TOKEN') && !_isRetry && !path.includes('/api/login')) {
+        const creds = getCredentials();
+        const savedCookie = getCookie();
+        try {
+          let loginRes = null;
+          if (creds && creds.username && creds.password) {
+            loginRes = await request('/api/login', { method: 'POST', body: { username: creds.username, password: creds.password }, _isRetry: true });
+          } else if (savedCookie) {
+            loginRes = await request('/api/login-cookie', { method: 'POST', body: { cookie: savedCookie }, _isRetry: true });
+          }
+          if (loginRes && loginRes.sessionId) {
+            setToken(loginRes.sessionId);
+            return await request(path, { method, body, headers, _isRetry: true });
+          }
+        } catch {
+          /* fallback to throw error */
+        }
+      }
+
       const message = data.error || `HTTP ${res.status}`;
       const error = new Error(message);
       error.status = res.status;
@@ -200,6 +238,8 @@ const Api = (() => {
     saveLicense,
     saveCredentials,
     getCredentials,
+    saveCookie,
+    getCookie,
     clearCredentials,
 
     health: () => request('/api/health'),

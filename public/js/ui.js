@@ -122,9 +122,10 @@ const UI = (() => {
       running: 'Đang giải bài',
       done: 'Đã hoàn thành',
       error: 'Có lỗi',
+      stopped: 'Đã dừng',
     };
     pill.textContent = labels[status] || status;
-    pill.className = `pill ${status === 'running' ? 'running' : status === 'done' ? 'done' : status === 'error' ? 'error' : ''}`;
+    pill.className = `pill ${status === 'running' ? 'running' : status === 'done' ? 'done' : (status === 'error' || status === 'stopped') ? 'error' : ''}`;
   }
 
   function toast(message, kind = 'info') {

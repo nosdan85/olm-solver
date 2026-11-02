@@ -614,9 +614,20 @@
       state.runId = res.runId;
       state.runningHomeworks = selected.map((h, i) => ({ id: h.id, title: h.title, status: 'pending', index: i }));
 
+      // REQUIREMENT FIX: Clear selected checkboxes right away so returning to homework tab won't cause conflict
+      state.selected.clear();
+      renderHomeworks();
+
       // Setup homework chips for individual logs
       renderHwLogChips(state.runningHomeworks);
       startSmartPolling(res.runId);
+
+      const stopBtn = $('#btn-stop-run');
+      if (stopBtn) {
+        stopBtn.style.display = 'inline-flex';
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⏹ Dừng giải bài';
+      }
 
       appendLog({
         ts: Date.now(),
@@ -649,6 +660,34 @@
   function bindLogTabs() {
     const clearBtn = $('#btn-clear-log');
     if (clearBtn) clearBtn.addEventListener('click', clearLog);
+
+    const stopBtn = $('#btn-stop-run');
+    if (stopBtn) {
+      stopBtn.addEventListener('click', async () => {
+        if (!state.runId) return;
+        if (confirm('Bạn có chắc chắn muốn dừng giải bài ngay lập tức?')) {
+          stopBtn.disabled = true;
+          stopBtn.textContent = 'Đang dừng…';
+          try {
+            await Api.stopRun(state.runId);
+            stopSmartPolling();
+            stopBgKeepAlive();
+            setRunStatus('stopped');
+            setStatus('Đã dừng', '');
+            const pText = $('#run-progress-text');
+            if (pText) pText.textContent = 'Tiến trình đã được dừng theo yêu cầu.';
+            appendLog({ ts: Date.now(), level: 'warn', message: '⏹ Bạn đã dừng giải bài ngay lập tức.' });
+            toast('Đã dừng tiến trình giải bài', 'warn');
+          } catch (err) {
+            toast(err.message || 'Lỗi dừng tiến trình', 'error');
+          } finally {
+            stopBtn.disabled = false;
+            stopBtn.textContent = '⏹ Dừng giải bài';
+            stopBtn.style.display = 'none';
+          }
+        }
+      });
+    }
   }
 
   function renderHwLogChips(homeworks) {
@@ -906,6 +945,15 @@
 
   async function doLogout() {
     if (confirm('Bạn có chắc chắn muốn đăng xuất tài khoản OLM?')) {
+      if (state.runId) {
+        try {
+          await Api.stopRun(state.runId);
+        } catch {}
+      }
+      stopSmartPolling();
+      stopBgKeepAlive();
+      const stopBtn = $('#btn-stop-run');
+      if (stopBtn) stopBtn.style.display = 'none';
       try {
         await Api.logout();
       } catch {
@@ -1015,6 +1063,8 @@
         stopSmartPolling();
         setRunStatus('done');
         setStatus('Đã hoàn thành', 'on');
+        const stopBtn = $('#btn-stop-run');
+        if (stopBtn) stopBtn.style.display = 'none';
         const pText = $('#run-progress-text');
         if (pText) pText.textContent = 'Đã hoàn thành toàn bộ bài tập!';
 
@@ -1029,6 +1079,18 @@
         stopSmartPolling();
         setRunStatus('error');
         setStatus('Lỗi', 'err');
+        const stopBtn = $('#btn-stop-run');
+        if (stopBtn) stopBtn.style.display = 'none';
+      } else if (data.type === 'stopped') {
+        stopBgKeepAlive();
+        stopSmartPolling();
+        setRunStatus('stopped');
+        setStatus('Đã dừng', '');
+        const pText = $('#run-progress-text');
+        if (pText) pText.textContent = 'Tiến trình giải bài đã dừng.';
+        const stopBtn = $('#btn-stop-run');
+        if (stopBtn) stopBtn.style.display = 'none';
+        appendLog({ ts: Date.now(), level: 'warn', message: '⏹ Tiến trình đã dừng.' });
       } else if (data.type === 'scheduled') {
         const schedTime = formatDateTime(new Date(data.submitAt).getTime());
         const subAt = $('#run-submit-at');
@@ -1235,6 +1297,8 @@
             stopBgKeepAlive();
             setRunStatus('done');
             setStatus('Đã hoàn thành', 'on');
+            const stopBtn = $('#btn-stop-run');
+            if (stopBtn) stopBtn.style.display = 'none';
             const pText = $('#run-progress-text');
             if (pText) pText.textContent = 'Đã hoàn thành toàn bộ bài tập!';
             notify('OLM Solver - Hoàn tất!', 'Đã hoàn thành giải toàn bộ các bài tập OLM được chọn!');
@@ -1244,6 +1308,15 @@
             stopBgKeepAlive();
             setRunStatus('error');
             setStatus('Lỗi', 'err');
+            const stopBtn = $('#btn-stop-run');
+            if (stopBtn) stopBtn.style.display = 'none';
+          } else if (r.status === 'stopped') {
+            stopSmartPolling();
+            stopBgKeepAlive();
+            setRunStatus('stopped');
+            setStatus('Đã dừng', '');
+            const stopBtn = $('#btn-stop-run');
+            if (stopBtn) stopBtn.style.display = 'none';
           }
         }
       } catch {

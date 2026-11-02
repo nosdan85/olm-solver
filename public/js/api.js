@@ -210,6 +210,7 @@ const Api = (() => {
     homeworks: () => request('/api/homeworks'),
     answer: (question) => request('/api/answer', { method: 'POST', body: { question } }),
     startRun: (homeworks, config) => request('/api/run', { method: 'POST', body: { homeworks, config } }),
+    stopRun: (runId) => request(runId ? `/api/run/${runId}/stop` : '/api/run/stop', { method: 'POST' }),
     run: (runId) => request(`/api/run/${runId}`),
     runs: () => request('/api/runs'),
     submit: (payload) => request('/api/submit', { method: 'POST', body: payload }),

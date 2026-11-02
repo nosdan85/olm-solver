@@ -72,11 +72,14 @@ function cancelSchedule(runId) {
 
 async function startRun({ session, homeworks, config, sessionId }) {
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const abortController = new AbortController();
   const run = {
     id: runId,
     sessionId,
     status: 'running',
     startedAt: Date.now(),
+    abortController,
+    _browser: null,
     homeworks: homeworks.map((h) => ({
       ...h,
       status: 'pending',
@@ -100,15 +103,19 @@ async function startRun({ session, homeworks, config, sessionId }) {
   (async () => {
     try {
       await executeRun(run, session, config);
-      run.status = 'done';
-      run.phase = 'done';
-      log(runId, 'success', `Đã hoàn thành toàn bộ ${homeworks.length} bài tập!`);
-      emit(runId, 'done', { status: 'done' });
+      if (run.status !== 'stopped') {
+        run.status = 'done';
+        run.phase = 'done';
+        log(runId, 'success', `Đã hoàn thành toàn bộ ${homeworks.length} bài tập!`);
+        emit(runId, 'done', { status: 'done' });
+      }
     } catch (err) {
-      run.status = 'error';
-      run.phase = 'error';
-      log(runId, 'error', `Tiến trình gặp lỗi: ${err.message}`);
-      emit(runId, 'error', { message: err.message });
+      if (run.status !== 'stopped') {
+        run.status = 'error';
+        run.phase = 'error';
+        log(runId, 'error', `Tiến trình gặp lỗi: ${err.message}`);
+        emit(runId, 'error', { message: err.message });
+      }
     }
   })();
 
@@ -129,6 +136,7 @@ async function executeRun(run, session, config) {
     log(run.id, 'info', 'Khởi tạo Browser automation engine...');
     try {
       browser = await browserEngine.launch();
+      run._browser = browser;
     } catch (err) {
       log(run.id, 'warn', `Khởi tạo browser thất bại (${err.message}); chuyển sang HTTP engine`);
       browser = null;
@@ -140,6 +148,7 @@ async function executeRun(run, session, config) {
   const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
 
   async function processHomework(hi) {
+    if (run.abortController?.signal?.aborted || run.status === 'stopped') return;
     const hw = run.homeworks[hi];
     hw.status = 'running';
     emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'running', title: hw.title });
@@ -151,6 +160,7 @@ async function executeRun(run, session, config) {
           homework: hw,
           session,
           config,
+          signal: run.abortController?.signal,
           log: (lvl, msg) => log(run.id, lvl, msg, hw.id),
           emit: (type, payload) => {
             if (payload?.phase) hw.phase = payload.phase;
@@ -296,11 +306,13 @@ async function executeRun(run, session, config) {
         await new Promise((r) => setTimeout(r, workerId * 3500));
       }
       while (queue.length > 0) {
+        if (run.abortController?.signal?.aborted || run.status === 'stopped') break;
         const hi = queue.shift();
         if (hi === undefined) break;
         await processHomework(hi);
+        if (run.abortController?.signal?.aborted || run.status === 'stopped') break;
         if (queue.length > 0) {
-          const rest = H.randInt(1500, 3000);
+          const rest = H.randInt(800, 1500);
           await new Promise((r) => setTimeout(r, rest));
         }
       }
@@ -309,6 +321,7 @@ async function executeRun(run, session, config) {
     await Promise.all(Array.from({ length: workerCount }, (_, wid) => worker(wid)));
   } finally {
     if (browser) await browser.close().catch(() => null);
+    run._browser = null;
   }
 }
 
@@ -357,13 +370,41 @@ function listRuns() {
     .slice(0, 30);
 }
 
-function subscribe(handler) {
-  bus.on('log', handler);
-  bus.on('run-event', handler);
-  return () => {
-    bus.off('log', handler);
-    bus.off('run-event', handler);
-  };
+function stopRun(runId) {
+  const run = runs.get(runId);
+  if (!run || run.status === 'done' || run.status === 'stopped') return false;
+  run.status = 'stopped';
+  run.phase = 'stopped';
+  if (run.abortController) {
+    try { run.abortController.abort(); } catch {}
+  }
+  if (run._browser) {
+    try { run._browser.close().catch(() => {}); } catch {}
+    run._browser = null;
+  }
+  log(runId, 'warn', '⏹ Tiến trình giải bài đã được dừng lại.');
+  emit(runId, 'stopped', { status: 'stopped' });
+  return true;
 }
 
-module.exports = { startRun, getRun, listRuns, subscribe, log, scheduleAt, cancelSchedule, runs };
+function stopRunsForSession(sessionId) {
+  if (!sessionId) return;
+  for (const [id, r] of runs) {
+    if (r.sessionId === sessionId && (r.status === 'running' || r.phase === 'solving')) {
+      stopRun(id);
+    }
+  }
+}
+
+module.exports = {
+  startRun,
+  stopRun,
+  stopRunsForSession,
+  getRun,
+  listRuns,
+  subscribe,
+  log,
+  scheduleAt,
+  cancelSchedule,
+  runs,
+};

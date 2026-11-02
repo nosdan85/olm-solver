@@ -53,7 +53,12 @@ async function launch() {
     ...(proxy ? [`--proxy-server=${proxy.serverArg}`] : []),
   ];
 
-  const opts = { headless, args, slowMo: Number(process.env.PUPPETEER_SLOWMO || 0) };
+  const opts = {
+    headless,
+    args,
+    slowMo: Number(process.env.PUPPETEER_SLOWMO || 0),
+    protocolTimeout: 300000,
+  };
   const fs = require('fs');
   const chromeCandidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -433,27 +438,29 @@ async function fillCurrentQuestion(page, question, answer) {
   }, { question, answer });
 }
 
-async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
+async function solveModernQuiz(page, { homework, config = {}, log, emit, signal }) {
   const total = await page.evaluate(() => document.querySelectorAll('.tw-olm-chip-question').length);
   if (!total) throw new Error('Không tìm thấy chip câu hỏi trong giao diện OLM hiện đại.');
   const questions = [];
   emit?.('phase', { phase: 'scanning', total });
-  if (log) log('info', `Bắt đầu nạp ${total} câu hỏi...`);
+  if (log) log('info', `Bắt đầu nạp nhanh ${total} câu hỏi...`);
   for (let index = 0; index < total; index++) {
+    if (signal?.aborted) throw new Error('Tiến trình đã bị dừng bởi người dùng');
     await page.evaluate((i) => {
       const chips = document.querySelectorAll('.tw-olm-chip-question');
       if (chips[i] && !chips[i].classList.contains('tw-selected')) chips[i].click();
     }, index);
-    await H.sleep(H.randInt(500, 850));
+    await H.sleep(H.randInt(150, 250));
     const question = await scanCurrentQuestion(page, index, homework.subject, log);
     question.scanStatus = question.text || question.imageBase64 ? 'scanned' : 'unresolved';
     questions.push(question);
     emit?.('scan-progress', { index, completed: index + 1, total });
-    if (log && (index === 0 || (index + 1) % 5 === 0 || index === total - 1)) {
-      log('info', `📋 Đang nạp câu hỏi: ${index + 1}/${total}...`);
+    if (log) {
+      const qDesc = String(question.text || '').replace(/\s+/g, ' ').slice(0, 45);
+      log('info', `📋 Đã quét Câu ${index + 1}/${total}: "${qDesc || (question.hasImage ? 'Hình ảnh' : 'Trắc nghiệm')}"`);
     }
   }
-  if (log) log('info', `Đã nạp xong ${questions.length}/${total} câu hỏi.`);
+  if (log) log('info', `Đã nạp xong toàn bộ ${questions.length}/${total} câu hỏi.`);
   emit?.('scan-complete', { total: questions.length });
 
   const answerEngine = require('./answer-engine');
@@ -472,11 +479,12 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
   emit?.('phase', { phase: 'solving', total: questions.length, batches: batches.length });
   let solvedCount = 0;
 
-  const aiConcurrency = Math.min(2, Math.max(1, batches.length));
+  const aiConcurrency = Math.min(3, Math.max(1, batches.length));
   const queue = batches.map((batch, idx) => ({ batch, idx }));
 
   async function aiWorker() {
     while (queue.length > 0) {
+      if (signal?.aborted) break;
       const item = queue.shift();
       if (!item) break;
       const { batch, idx } = item;
@@ -540,6 +548,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
   let failed = 0;
   const questionStatuses = new Map();
   for (const question of questions) {
+    if (signal?.aborted) throw new Error('Tiến trình đã bị dừng bởi người dùng');
     const answer = answers.get(question.id);
     if (!answer || answer.error) {
       failed++;
@@ -559,7 +568,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
       const chips = document.querySelectorAll('.tw-olm-chip-question');
       if (chips[i] && !chips[i].classList.contains('tw-selected')) chips[i].click();
     }, question.index);
-    await H.sleep(H.randInt(400, 800));
+    await H.sleep(H.randInt(120, 220));
     const result = await fillCurrentQuestion(page, question, planned);
     if (!result.ok) {
       failed++;
@@ -582,7 +591,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
     });
 
     emit?.('fill-progress', { completed: filled + failed, filled, failed, total: questions.length });
-    await H.sleep(H.randInt(400, 700));
+    await H.sleep(H.randInt(100, 180));
   }
   emit?.('fill-complete', { filled, failed, total: questions.length });
 
@@ -642,7 +651,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit }) {
 }
 
 // Step-by-step interactive practice (for OLM /chu-de/... practice exercises)
-async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
+async function solveFlowPractice(page, { homework, config = {}, log, emit, signal }) {
   const answerEngine = require('./answer-engine');
   const questions = [];
   const maxQuestions = 150;
@@ -652,6 +661,7 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
   emit?.('phase', { phase: 'solving' });
 
   while (step < maxQuestions) {
+    if (signal?.aborted) throw new Error('Tiến trình đã bị dừng bởi người dùng');
     // 1. Check if practice is finished (only after completing at least 1 question)
     if (step > 0) {
       const finishCheck = await page.evaluate(() => {
@@ -672,10 +682,41 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
 
     // 2. Scan current question with retries
     let question = null;
-    for (let r = 0; r < 5; r++) {
+    for (let r = 0; r < 4; r++) {
       question = await scanCurrentQuestion(page, step, homework.subject, log);
       if (question.text || question.imageBase64) break;
-      await H.sleep(1500);
+      await H.sleep(400);
+    }
+
+    // Self-healing fallback: if step === 0 and no question found, check if result screen is still visible
+    if (step === 0 && (!question || (!question.text && !question.imageBase64))) {
+      const redoClicked = await page.evaluate(() => {
+        const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
+        if (byId) { byId.click(); return true; }
+        const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
+          const t = (el.innerText || el.textContent || '').trim();
+          return /luyện tập lại|làm lại bài/i.test(t) && t.length < 35;
+        });
+        if (candidates.length > 0) {
+          const btn = candidates[candidates.length - 1];
+          (btn.closest('button, a, div[role=button]') || btn).click();
+          return true;
+        }
+        return false;
+      });
+
+      if (redoClicked) {
+        if (log) log('info', 'Phát hiện màn hình bài cũ, đang nhấn "Luyện tập lại"...');
+        await H.sleep(1200);
+        await page.evaluate(() => {
+          const cBtn = Array.from(document.querySelectorAll('button, a, div, span')).find((b) =>
+            /^(xác nhận|đồng ý)$/i.test((b.innerText || '').trim())
+          );
+          if (cBtn) (cBtn.closest('button, a, div[role=button]') || cBtn).click();
+        });
+        await H.sleep(2000);
+        question = await scanCurrentQuestion(page, 0, homework.subject, log);
+      }
     }
 
     if (!question || (!question.text && !question.imageBase64)) {
@@ -700,14 +741,14 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
     }
 
     // 4. Fill answer
-    await H.sleep(H.randInt(500, 900));
+    await H.sleep(H.randInt(100, 180));
     const fillRes = await fillCurrentQuestion(page, question, answer);
     if (!fillRes.ok && log) {
       log('warn', `Câu ${step + 1}: Điền đáp án chưa tối ưu (${fillRes.reason || 'unknown'})`);
     }
 
     // 5. Click "Kiểm tra đáp án"
-    await H.sleep(H.randInt(600, 1100));
+    await H.sleep(H.randInt(100, 200));
     await page.evaluate(() => {
       const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
       const allBtns = [
@@ -720,7 +761,7 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
 
     if (log) log('info', `✍ Đã nộp đáp án Câu ${step + 1} -> Đang kiểm tra và chuyển câu...`);
     emit?.('fill-progress', { completed: step + 1, filled: step + 1, total: step + 1 });
-    await H.sleep(H.randInt(1500, 2200));
+    await H.sleep(H.randInt(250, 450));
 
     // 6. Check if done immediately after submit
     const doneAfterSubmit = await page.evaluate(() => {
@@ -734,7 +775,7 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
       break;
     }
 
-    // 7. Click "Tiếp" button if present (appears when answered wrongly or on manual advance)
+    // 7. Click "Tiếp" button if present
     await page.evaluate(() => {
       const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root');
       const allBtns = [
@@ -745,10 +786,10 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
       if (nextBtn) nextBtn.click();
     });
 
-    // 8. Wait for next question (OLM auto-advances on correct answers, or advances after "Tiếp")
+    // 8. Wait for next question
     let advancedToNext = false;
-    for (let w = 0; w < 10; w++) {
-      await H.sleep(1000);
+    for (let w = 0; w < 8; w++) {
+      await H.sleep(150);
 
       const checkState = await page.evaluate(() => {
         const text = document.body.innerText || '';
@@ -803,7 +844,7 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit }) {
 }
 
 // Work through one homework in the browser.
-async function solveHomework(browser, { homework, session, config = {}, log, emit }) {
+async function solveHomework(browser, { homework, session, config = {}, log, emit, signal }) {
   const page = await browser.newPage();
 
   const proxy = require('./proxy').parseProxy();
@@ -849,67 +890,101 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       if (log) log('warn', `Trang tải chậm (${navErr.message}), đang kiểm tra nội dung...`);
     }
 
-    // 0. Redo Practice Check: If homework was already completed, click "Luyện tập lại" and confirm modal
+    // 1. Chờ OLM Single Page Application mount giao diện
     try {
-      const redoDetected = await page.evaluate(() => {
-        const redoBtn = document.querySelector('#btn-redo-practice') ||
-                        Array.from(document.querySelectorAll('button, a, div[role=button]')).find((b) =>
-                          /luyện tập lại/i.test((b.innerText || '').trim())
-                        );
-        const hasResult = !!document.querySelector('.practice-result, .box-result, .box-score') ||
-                          /đừng nản lòng|kết quả luyện tập|kết quả bài làm|xem đáp án/i.test(document.body.innerText || '');
-        const hasActiveQuiz = !!(document.querySelector('default-root')?.shadowRoot?.querySelector('type-quiz-x-mobile, type-quiz-x') ||
-                                 document.querySelector('.tw-olm-chip-question'));
-        if (redoBtn && (hasResult || !hasActiveQuiz)) {
-          redoBtn.click();
+      await page.waitForFunction(() => {
+        const hasRedo = document.querySelector('#btn-redo-practice') ||
+                        Array.from(document.querySelectorAll('button, a, div[role=button]')).some(b => /luyện tập lại/i.test(b.innerText || ''));
+        const hasChips = document.querySelector('.tw-olm-chip-question');
+        const hasQuiz = document.querySelector('default-root') ||
+                        document.querySelector('.question-content, #paragraph, type-quiz-x, type-quiz-x-mobile');
+        const hasResult = document.querySelector('.practice-result, .box-result, .box-score') ||
+                          /đừng nản lòng|kết quả luyện tập|xem đáp án/i.test(document.body?.innerText || '');
+        return !!(hasRedo || hasChips || hasQuiz || hasResult);
+      }, { timeout: 15000 });
+    } catch {}
+
+    // 2. Kiểm tra nếu bài tập đã hoàn thành từ trước (hiển thị nút "Luyện tập lại" hoặc màn hình kết quả "Đừng nản lòng")
+    let redoClicked = false;
+    for (let r = 0; r < 5; r++) {
+      redoClicked = await page.evaluate(() => {
+        const byId = document.getElementById('btn-redo-practice') || document.querySelector('[id*="redo"]');
+        if (byId) {
+          byId.click();
           return true;
         }
+
+        const candidates = Array.from(document.querySelectorAll('button, a, div, span, p')).filter((el) => {
+          const text = (el.innerText || el.textContent || '').trim();
+          return /^(luyện tập lại|làm lại bài|làm lại|luyen tap lai)$/i.test(text) ||
+                 (text.includes('Luyện tập lại') && text.length < 35);
+        });
+
+        if (candidates.length > 0) {
+          const target = candidates[candidates.length - 1];
+          const clickable = target.closest('button, a, div[role=button]') || target;
+          clickable.click();
+          clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return true;
+        }
+
         return false;
       });
 
-      if (redoDetected) {
-        if (log) log('info', 'Phát hiện bài đã làm từ trước -> Đang nhấn "Luyện tập lại" để làm lại bài...');
-        await H.sleep(1500);
+      if (redoClicked) break;
+      await H.sleep(600);
+    }
 
-        // Click "Xác nhận" in modal
-        const confirmed = await page.evaluate(() => {
-          const popupBtn = document.querySelector('.popup-primary-button');
-          if (popupBtn) {
-            popupBtn.click();
-            return true;
-          }
-          const confirmBtns = Array.from(document.querySelectorAll('button, a.btn, .tw-olm-btn-primary-48')).filter((b) =>
-            /xác nhận|đồng ý/i.test((b.innerText || '').trim()) && !b.classList.contains('btn-submit-cate')
-          );
-          if (confirmBtns[0]) {
-            confirmBtns[0].click();
-            return true;
-          }
-          return false;
+    if (redoClicked) {
+      if (log) log('info', 'Phát hiện bài đã làm từ trước -> Đang nhấn "Luyện tập lại" để làm lại bài...');
+
+      // Chờ popup modal xác nhận xuất hiện ("Bạn có chắc xóa dữ liệu bài này để làm lại?")
+      await H.sleep(1000);
+      try {
+        await page.waitForSelector('.popup-primary-button, .tw-olm-btn-primary-48, .modal-confirm, .swal2-confirm', {
+          visible: true,
+          timeout: 5000,
         });
+      } catch {}
 
-        if (confirmed && log) {
-          log('info', 'Đã xác nhận xóa dữ liệu cũ, đang tải câu hỏi mới...');
+      // Nhấn nút "Xác nhận" trên popup
+      await page.evaluate(() => {
+        const popupBtn = document.querySelector('.popup-primary-button');
+        if (popupBtn) {
+          popupBtn.click();
+          popupBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          return;
         }
-        await H.sleep(3000);
-      }
-    } catch (err) {
-      if (log) log('warn', `Kiểm tra làm lại bài: ${err.message}`);
-    }
-
-    try {
-      await page.waitForSelector('default-root, .tw-olm-chip-question, .question-container, .question-item, .question, #question-container, type-quiz-x, type-quiz-x-mobile, #btn-redo-practice', {
-        visible: true,
-        timeout: 15000,
+        const confirmBtns = Array.from(document.querySelectorAll('button, a, div, span')).filter((b) =>
+          /^(xác nhận|đồng ý|xac nhan|dong y|ok)$/i.test((b.innerText || b.textContent || '').trim()) &&
+          !b.classList.contains('btn-submit-cate')
+        );
+        if (confirmBtns.length > 0) {
+          const btn = confirmBtns[confirmBtns.length - 1];
+          const clickable = btn.closest('button, a, div[role=button]') || btn;
+          clickable.click();
+          clickable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        }
       });
-    } catch {
-      await H.sleep(2000);
+
+      if (log) log('info', 'Đã xác nhận làm lại bài, đang nạp câu hỏi mới...');
+
+      // Chờ modal đóng và màn hình kết quả biến mất, câu hỏi mới nạp
+      await H.sleep(2500);
     }
 
-    // A. Check if this is the modern OLM exam interface with chip buttons
-    const chipsCount = await page.evaluate(() => document.querySelectorAll('.tw-olm-chip-question').length);
+    // 3. Kiểm tra xem có chip câu hỏi trắc nghiệm hiện đại không (.tw-olm-chip-question)
+    let chipsCount = 0;
+    try {
+      await page.waitForSelector('.tw-olm-chip-question', { timeout: 3500 });
+      chipsCount = await page.evaluate(() => document.querySelectorAll('.tw-olm-chip-question').length);
+    } catch {
+      chipsCount = await page.evaluate(() => document.querySelectorAll('.tw-olm-chip-question').length);
+    }
+
     if (chipsCount > 0) {
-      return await solveModernQuiz(page, { homework, config, log, emit });
+      if (log) log('info', `Giao diện bài thi trắc nghiệm (${chipsCount} câu) -> Bắt đầu giải siêu tốc...`);
+      return await solveModernQuiz(page, { homework, config, log, emit, signal });
     }
 
     // B. Check if this is the modern OLM step-by-step flow practice interface
@@ -927,7 +1002,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
 
     const isChuDeUrl = homework.url && homework.url.includes('/chu-de/');
     if (isFlowPractice || isChuDeUrl) {
-      return await solveFlowPractice(page, { homework, config, log, emit });
+      return await solveFlowPractice(page, { homework, config, log, emit, signal });
     }
 
     // C. Fallback: older / generic question blocks

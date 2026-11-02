@@ -223,6 +223,9 @@ app.post('/api/login-cookie', async (req, res) => {
 
 
 app.post('/api/logout', requireSession, (req, res) => {
+  try {
+    runner.stopRunsForSession(req.olmSession.id);
+  } catch {}
   sessionStore.destroy(req.olmSession.id);
   res.json({ ok: true });
 });
@@ -454,6 +457,21 @@ app.get('/api/run/:runId', (req, res) => {
       logs: run.logs.slice(-200),
     },
   });
+});
+
+app.post('/api/run/:runId/stop', requireSession, (req, res) => {
+  const stopped = runner.stopRun(req.params.runId);
+  res.json({ ok: true, stopped });
+});
+
+app.post('/api/run/stop', requireSession, (req, res) => {
+  const { runId } = req.body || {};
+  if (runId) {
+    runner.stopRun(runId);
+  } else {
+    runner.stopRunsForSession(req.olmSession.id);
+  }
+  res.json({ ok: true });
 });
 
 app.get('/api/runs', (req, res) => {

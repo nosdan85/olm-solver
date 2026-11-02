@@ -164,7 +164,10 @@
           <span class="pill" id="run-status">Sẵn sàng</span>
           <span id="run-progress-text" class="run-progress-lbl">Chưa có bài nào đang chạy</span>
         </div>
-        <button class="btn btn-mini" id="btn-clear-log">Xoá log</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn btn-mini btn-danger" id="btn-stop-run" style="display:none; background:#ef4444; color:#fff; border-color:#dc2626; font-weight:600;">⏹ Dừng giải bài</button>
+          <button class="btn btn-mini" id="btn-clear-log">Xoá log</button>
+        </div>
       </div>
       <div id="run-submit-at" class="muted small" style="margin-top: 4px;"></div>
     </div>

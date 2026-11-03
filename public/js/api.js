@@ -12,7 +12,7 @@ const Api = (() => {
   const LICENSE_KEY = 'olm.license';
 
   // URL Cloudflare Tunnel mặc định kết nối tới máy tính (dùng cho mobile app iOS khi dùng 4G/5G hoặc ngoài Wi-Fi)
-  const DEFAULT_TUNNEL_URL = 'https://desktop-explain-interested-corrections.trycloudflare.com';
+  const DEFAULT_TUNNEL_URL = 'https://plot-metallic-workstation-military.trycloudflare.com';
 
   function getServerUrl() {
     try {

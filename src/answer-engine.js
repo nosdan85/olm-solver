@@ -253,11 +253,15 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
               return String(s).toLowerCase().startsWith('đ') || String(s).toLowerCase().startsWith('t');
             });
           }
+          const expected = (question.statements || []).length;
+          const resolved = statements.length >= expected && expected > 0;
           return {
-            statements,
+            statements: resolved ? statements : undefined,
             answer: parsed.answer || '',
             explanation: parsed.explanation || '',
             kind: 'true_false',
+            unresolved: !resolved,
+            reason: resolved ? undefined : 'missing-statements',
             model: provider.model,
             raw: content,
           };
@@ -270,31 +274,142 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
           } else if (Number.isInteger(parsed.correctIndex)) {
             correctIndices = [parsed.correctIndex];
           }
+          if (!correctIndices.length && parsed.answer) {
+            const byText = matchOptionIndex(parsed.answer, options);
+            if (byText >= 0) correctIndices = [byText];
+          }
           return {
             correctIndices,
-            answer: parsed.answer || '',
+            answer: parsed.answer || (correctIndices[0] !== undefined ? options[correctIndices[0]] : ''),
             explanation: parsed.explanation || '',
             kind: 'multi_choice',
+            unresolved: correctIndices.length === 0,
+            reason: correctIndices.length ? undefined : 'no-correct-indices',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        // --- Các dạng câu hỏi mới ---
+        if (question.type === 'dropdown') {
+          const idx = normalizeIndex(parsed.correctIndex ?? parsed.answer, options.length);
+          if (idx < 0 && parsed.answer) {
+            const byText = matchOptionIndex(parsed.answer, options);
+            if (byText >= 0) correctIndex = byText;
+          } else if (idx >= 0) {
+            correctIndex = idx;
+          }
+          return {
+            correctIndex,
+            answer: correctIndex >= 0 ? (options[correctIndex] || parsed.answer || '') : (parsed.answer || ''),
+            explanation: parsed.explanation || '',
+            kind: 'dropdown',
+            unresolved: correctIndex < 0,
+            reason: correctIndex >= 0 ? undefined : 'dropdown-unmatched',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        if (question.type === 'matching') {
+          const pairs = Array.isArray(parsed.pairs) ? parsed.pairs : [];
+          return {
+            pairs,
+            answer: parsed.answer || '',
+            explanation: parsed.explanation || '',
+            kind: 'matching',
+            unresolved: !pairs.length,
+            reason: pairs.length ? undefined : 'missing-pairs',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        if (question.type === 'drag_drop' || question.type === 'grouping') {
+          const mapping = Array.isArray(parsed.mapping) ? parsed.mapping : [];
+          return {
+            mapping,
+            answer: parsed.answer || '',
+            explanation: parsed.explanation || '',
+            kind: question.type,
+            unresolved: !mapping.length,
+            reason: mapping.length ? undefined : 'missing-mapping',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        if (question.type === 'hotspot') {
+          return {
+            answer: parsed.answer || '',
+            box: parsed.box && typeof parsed.box === 'object' ? parsed.box : null,
+            explanation: parsed.explanation || '',
+            kind: 'hotspot',
+            unresolved: !parsed.answer,
+            reason: parsed.answer ? undefined : 'missing-hotspot',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        if (question.type === 'essay') {
+          const text = parsed.answer || parsed.explanation || '';
+          return {
+            answer: text,
+            explanation: parsed.explanation || text,
+            kind: 'essay',
+            unresolved: !text,
+            reason: text ? undefined : 'missing-essay',
+            model: provider.model,
+            raw: content,
+          };
+        }
+
+        if (question.type === 'word_select' || question.type === 'underline') {
+          const idxs = Array.isArray(parsed.correctIndices)
+            ? parsed.correctIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0)
+            : [];
+          return {
+            correctIndices: idxs,
+            answer: parsed.answer || '',
+            explanation: parsed.explanation || '',
+            kind: question.type,
+            unresolved: !idxs.length,
+            reason: idxs.length ? undefined : 'missing-word-indices',
             model: provider.model,
             raw: content,
           };
         }
 
         if (options.length > 0) {
-          correctIndex = normalizeIndex(parsed.correctIndex ?? parsed.index ?? parsed.answer, options.length);
-          if (correctIndex < 0) {
-            // Model answered with the option text instead of an index.
-            correctIndex = options.findIndex((o) =>
-              String(o).trim().toLowerCase() === String(parsed.answer || '').trim().toLowerCase()
-            );
+          // --- Sửa lỗi: index và nội dung answer phải khớp nhau ---
+          const idxFromIndex = normalizeIndex(parsed.correctIndex ?? parsed.index, options.length);
+          const idxFromAnswer = parsed.answer ? matchOptionIndex(parsed.answer, options) : -1;
+
+          if (idxFromIndex >= 0 && idxFromAnswer >= 0 && idxFromIndex !== idxFromAnswer) {
+            // Nội dung answer khớp 1 đáp án cụ thể nhưng index sai -> tin answer.
+            correctIndex = idxFromAnswer;
+          } else if (idxFromIndex >= 0) {
+            correctIndex = idxFromIndex;
+          } else if (idxFromAnswer >= 0) {
+            correctIndex = idxFromAnswer;
+          } else if (parsed.explanation) {
+            const expMatch = String(parsed.explanation).match(/(?:chọn|đáp án|phương án)\s*\(?([A-D])\)?/i);
+            if (expMatch) {
+              const n = expMatch[1].toUpperCase().charCodeAt(0) - 65;
+              if (n >= 0 && n < options.length) correctIndex = n;
+            }
           }
         }
 
         return {
           correctIndex,
-          answer: parsed.answer ?? (correctIndex >= 0 ? options[correctIndex] : ''),
+          answer: correctIndex >= 0 ? (options[correctIndex] || parsed.answer || '') : (parsed.answer ?? ''),
           explanation: parsed.explanation || '',
           kind: options.length > 0 ? 'choice' : (question.type || 'text'),
+          // KHÔNG đoán bừa: đánh dấu unresolved để câu được xử lý lại.
+          unresolved: options.length > 0 && correctIndex < 0,
+          reason: options.length > 0 && correctIndex < 0 ? 'unmatched-answer' : undefined,
           model: provider.model,
           raw: content,
         };
@@ -333,11 +448,19 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
 function buildPrompt(question) {
   const options = question.options || [];
   const lines = [];
+  const hasImage = !!question.imageBase64;
   lines.push(`Môn học: ${question.subject || 'Toán/Lý/Hóa/Sinh/Sử/Địa/Văn'}`);
-  lines.push(`Câu hỏi: ${question.text || '(Xem nội dung trong hình ảnh chụp màn hình kèm theo)'}`);
+  // Chỉ trỏ tới ảnh khi ảnh thực sự được đính kèm. Trước đây dòng này luôn
+  // ghi "(Xem nội dung trong hình ảnh...)" kể cả khi không có ảnh, khiến model
+  // tưởng mình đang thiếu dữ kiện và từ chối trả lời.
+  lines.push(
+    `Câu hỏi: ${question.text || (hasImage
+      ? '(Nội dung nằm trong hình ảnh chụp màn hình kèm theo)'
+      : '(KHÔNG đọc được nội dung câu hỏi - hãy trả về "không xác định" thay vì đoán bừa)')}`
+  );
 
-  if (question.imageBase64) {
-    lines.push('(Lưu ý: Câu hỏi hoặc sơ đồ/công thức được đính kèm trong ảnh chụp màn hình, hãy quan sát kỹ ảnh để giải).');
+  if (hasImage) {
+    lines.push('(Lưu ý: Câu hỏi, sơ đồ hoặc công thức nằm trong ảnh chụp màn hình kèm theo. Hãy quan sát kỹ ảnh, đọc đúng số liệu và công thức trước khi giải.)');
   }
 
   if (question.type === 'true_false' || (question.statements && question.statements.length > 0)) {
@@ -360,6 +483,76 @@ function buildPrompt(question) {
     lines.push('\nHãy chọn TẤT CẢ các đáp án đúng (có thể có 1, 2, 3 hoặc tất cả các đáp án đúng).');
     lines.push('Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
     lines.push('{"correctIndices": [0, 2], "explanation": "<phân tích cẩn thận từng ý>", "answer": "<nội dung các ý đúng>"}');
+    return lines.join('\n');
+  }
+
+  // --- Nhóm câu hỏi Điền đáp án: dropdown, kéo-thả, gom nhóm ---
+  if (question.type === 'dropdown') {
+    lines.push('\nĐây là dạng câu hỏi CHỌN TỪ MENU THẢ XUỐNG (dropdown).');
+    lines.push('Các lựa chọn có sẵn:');
+    options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+    lines.push('\nChọn đúng MỘT lựa chọn. Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"correctIndex": <chỉ số lựa chọn đúng>, "answer": "<nội dung lựa chọn đúng>", "explanation": "<giải thích ngắn>"}');
+    return lines.join('\n');
+  }
+
+  if (question.type === 'drag_drop' || question.type === 'grouping') {
+    lines.push('\nĐây là dạng câu hỏi KÉO THẢ / GOM NHÓM (kéo thẻ vào ô trống hoặc vào nhóm).');
+    if (Array.isArray(question.items) && question.items.length) {
+      lines.push('Các thẻ cần đặt:');
+      question.items.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+    }
+    if (Array.isArray(question.targets) && question.targets.length) {
+      lines.push('Các ô / nhóm đích:');
+      question.targets.forEach((t, i) => lines.push(`  [${i}] ${typeof t === 'string' ? t : t.label}`));
+    }
+    lines.push('\nHãy xác định thẻ nào thuộc ô/nhóm nào. Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"mapping": [{"item": <chỉ số thẻ>, "target": <chỉ số ô đích>}], "answer": "<mô tả ngắn>", "explanation": "<giải thích ngắn>"}');
+    lines.push('Nếu không xác định được, trả về "mapping": [] và answer là "không xác định".');
+    return lines.join('\n');
+  }
+
+  // --- Nhóm câu hỏi Kết nối và Hình ảnh ---
+  if (question.type === 'matching') {
+    lines.push('\nĐây là dạng câu hỏi GHÉP ĐÔI (nối cột A với cột B).');
+    if (Array.isArray(question.left) && question.left.length) {
+      lines.push('Cột A:');
+      question.left.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+    }
+    if (Array.isArray(question.right) && question.right.length) {
+      lines.push('Cột B:');
+      question.right.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+    }
+    lines.push('\nHãy nối mỗi ý cột A với đúng một ý cột B. Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"pairs": [{"left": <chỉ số cột A>, "right": <chỉ số cột B>}], "answer": "<mô tả ngắn>", "explanation": "<giải thích ngắn>"}');
+    return lines.join('\n');
+  }
+
+  if (question.type === 'hotspot') {
+    lines.push('\nĐây là dạng câu hỏi CHỌN VỊ TRÍ TRÊN HÌNH (hotspot).');
+    lines.push('Hãy xác định vị trí/vùng đúng trên hình ảnh kèm theo.');
+    lines.push('Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"answer": "<mô tả vị trí>", "box": {"x": <tọa độ x tương đối 0-1>, "y": <tọa độ y tương đối 0-1>, "width": <bề rộng 0-1>, "height": <chiều cao 0-1>}, "explanation": "<giải thích ngắn>"}');
+    lines.push('Toạ độ box dùng đơn vị 0-1 so với kích thước ảnh. Nếu không xác định được, trả về answer là "không xác định".');
+    return lines.join('\n');
+  }
+
+  if (question.type === 'essay') {
+    lines.push('\nĐây là dạng câu hỏi TỰ LUẬN (nhập liời giải hoặc nộp ảnh bài làm).');
+    lines.push('Hãy viết lời giải chi tiết, đúng chương trình SGK.');
+    lines.push('Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"answer": "<lời giải đầy đủ>", "explanation": "<lời giải đầy đủ>"}');
+    return lines.join('\n');
+  }
+
+  if (question.type === 'word_select' || question.type === 'underline') {
+    lines.push('\nĐây là dạng câu hỏi GẠCH CHÂN / CHỌN TỪ TRONG ĐOẠN VĂN.');
+    if (Array.isArray(question.words) && question.words.length) {
+      lines.push('Các từ/cụm từ trong đoạn:');
+      question.words.forEach((w, i) => lines.push(`  [${i}] ${typeof w === 'string' ? w : w.text}`));
+    }
+    lines.push('\nHãy chọn từ/cụm từ đúng theo yêu cầu. Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:');
+    lines.push('{"correctIndices": [<các chỉ số đúng>], "answer": "<từ đã chọn>", "explanation": "<giải thích ngắn>"}');
     return lines.join('\n');
   }
 
@@ -429,23 +622,58 @@ function buildBatchPrompt(questions) {
   for (const q of questions) {
     lines.push(`\nID: ${q.id}`);
     lines.push(`Môn học: ${q.subject || ''}`);
-    lines.push(`Câu hỏi: ${q.text || '(xem nội dung đã cung cấp)'}`);
+    lines.push('Câu hỏi: ' + (q.text || '(xem nội dung đã cung cấp)'));
     if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
       lines.push('Mệnh đề Đúng/Sai:');
       (q.statements || []).forEach((s, i) => lines.push(`  [${i}] ${s}`));
     } else if (q.type === 'multi_choice') {
       lines.push('Dạng chọn nhiều đáp án đúng (chọn những phát biểu / câu đúng):');
-      (q.options || []).forEach((o, i) => {
-        const letter = String.fromCharCode(65 + i);
-        lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
-      });
+      (q.options || []).forEach((o, i) => lines.push(`  [${i}] ${o}`));
+      lines.push(`(Quy ước: ${(q.options || []).map((_, i) => `${String.fromCharCode(65 + i)}=[${i}]`).join(', ')})`);
       lines.push('-> Chọn TẤT CẢ các đáp án đúng và trả về mảng "correctIndices": [...]');
+    } else if (q.type === 'dropdown') {
+      lines.push('Dạng chọn từ menu thả xuống (dropdown) - chọn đúng 1 lựa chọn:');
+      (q.options || []).forEach((o, i) => lines.push(`  [${i}] ${o}`));
+      lines.push('-> Trả về "correctIndex" (chỉ số lựa chọn đúng) và "answer" (nội dung lựa chọn đúng).');
+    } else if (q.type === 'drag_drop' || q.type === 'grouping') {
+      lines.push(q.type === 'grouping'
+        ? 'Dạng gom nhóm / phân loại - kéo từng thẻ vào đúng nhóm:'
+        : 'Dạng kéo thả vào ô trống:');
+      if (Array.isArray(q.items) && q.items.length) {
+        lines.push('Các thẻ:');
+        q.items.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+      }
+      if (Array.isArray(q.targets) && q.targets.length) {
+        lines.push('Các ô/nhóm đích:');
+        q.targets.forEach((t, i) => lines.push(`  [${i}] ${typeof t === 'string' ? t : t.label}`));
+      }
+      lines.push('-> Trả về "mapping": [{"item": <chỉ số thẻ>, "target": <chỉ số ô đích>}].');
+    } else if (q.type === 'matching') {
+      lines.push('Dạng ghép đôi / nối cột:');
+      if (Array.isArray(q.left) && q.left.length) {
+        lines.push('Cột A:');
+        q.left.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+      }
+      if (Array.isArray(q.right) && q.right.length) {
+        lines.push('Cột B:');
+        q.right.forEach((it, i) => lines.push(`  [${i}] ${typeof it === 'string' ? it : it.text}`));
+      }
+      lines.push('-> Trả về "pairs": [{"left": <chỉ số cột A>, "right": <chỉ số cột B>}].');
+    } else if (q.type === 'hotspot') {
+      lines.push('Dạng chọn vị trí trên hình (hotspot).');
+      lines.push('-> Trả về "answer" (mô tả vị trí) và "box" {"x","y","width","height"} theo toạ độ tương đối 0-1.');
+    } else if (q.type === 'word_select' || q.type === 'underline') {
+      lines.push('Dạng gạch chân / chọn từ trong đoạn văn:');
+      if (Array.isArray(q.words) && q.words.length) {
+        q.words.forEach((w, i) => lines.push(`  [${i}] ${typeof w === 'string' ? w : w.text}`));
+      }
+      lines.push('-> Trả về "correctIndices": [<các chỉ số từ đúng>].');
+    } else if (q.type === 'essay') {
+      lines.push('Dạng tự luận - viết lời giải chi tiết vào "answer".');
     } else if (Array.isArray(q.options) && q.options.length) {
       lines.push('Danh sách 4 đáp án lựa chọn:');
-      q.options.forEach((o, i) => {
-        const letter = String.fromCharCode(65 + i);
-        lines.push(`  [${i}] (Đáp án ${letter}): ${o}`);
-      });
+      q.options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
+      lines.push(`(Quy ước: ${q.options.map((_, i) => `${String.fromCharCode(65 + i)}=[${i}]`).join(', ')})`);
       lines.push('-> Bắt buộc đối chiếu 4 đáp án A, B, C, D ở trên và chọn ra đúng 1 đáp án chuẩn xác nhất.');
     } else {
       lines.push('Dạng tự luận/trả lời ngắn/điền số: ghi đáp án ngắn gọn nhất theo chuẩn SGK vào "answer".');
@@ -471,54 +699,120 @@ function validateBatchAnswers(parsed, questions) {
       id,
       correctIndex: -1,
       answer: item.answer ?? '',
-      statements: Array.isArray(item.statements) ? item.statements.map((value) => {
+      statements: undefined,
+      explanation: item.explanation || '',
+    };
+    if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
+      // Chỉ dạng Đúng/Sai mới dùng "statements". Các dạng khác bỏ qua để
+      // tránh rò rỉ mảng boolean không liên quan.
+      result.statements = Array.isArray(item.statements) ? item.statements.map((value) => {
         if (typeof value === 'boolean') return value;
         if (typeof value === 'object' && value !== null) return Boolean(value.isTrue ?? value.answer);
         const text = String(value).toLowerCase();
         return text.startsWith('đ') || text.startsWith('t') || text === 'true';
-      }) : undefined,
-      explanation: item.explanation || '',
-    };
-    if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
-      if (!Array.isArray(result.statements) || result.statements.length < (q.statements || []).length) {
+      }) : undefined;
+      const expected = (q.statements || []).length;
+      if (!Array.isArray(result.statements) || result.statements.length < expected || expected === 0) {
+        // Không được đoán "toàn bộ Đúng" khi model không trả về mệnh đề.
+        // Báo lỗi để batch được thử lại (cuối cùng fallback sang giải từng câu).
         throw new Error(`Missing true/false statements for ${id}`);
       }
     } else if (q.type === 'multi_choice') {
       let correctIndices = [];
       if (Array.isArray(item.correctIndices)) {
-        correctIndices = item.correctIndices.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < (q.options || []).length);
-      } else if (Number.isInteger(item.correctIndex)) {
-        correctIndices = [item.correctIndex];
+        correctIndices = item.correctIndices.map(Number);
+        const bad = correctIndices.find((n) => !Number.isInteger(n) || n < 0 || n >= (q.options || []).length);
+        if (bad !== undefined) throw new Error(`Invalid answer index ${bad} for ${id}`);
+      } else if (item.correctIndex !== undefined && item.correctIndex !== null) {
+        const n = Number(item.correctIndex);
+        if (!Number.isInteger(n) || n < 0 || n >= (q.options || []).length) {
+          throw new Error(`Invalid answer index ${item.correctIndex} for ${id}`);
+        }
+        correctIndices = [n];
       }
-      result.correctIndices = correctIndices.length ? correctIndices : [0];
-      result.correctIndex = result.correctIndices[0] ?? 0;
-      if (!result.answer) result.answer = (q.options && q.options[result.correctIndex]) || '';
-    } else if (Array.isArray(q.options) && q.options.length) {
-      result.correctIndex = normalizeIndex(item.correctIndex ?? item.index ?? item.answer, q.options.length);
-      if (result.correctIndex < 0 && item.answer) {
+      if (!correctIndices.length && item.answer) {
+        // Thử khớp theo nội dung đáp án khi model không đưa chỉ số.
         const cleanAns = String(item.answer).trim().toLowerCase();
-        // 1. Try exact match first
-        result.correctIndex = q.options.findIndex((o) => {
-          return String(o).trim().toLowerCase() === cleanAns;
+        const byText = (q.options || []).findIndex((o) => {
+          const co = String(o).trim().toLowerCase();
+          return co === cleanAns || (cleanAns.length >= 4 && (co.includes(cleanAns) || cleanAns.includes(co)));
         });
-        // 2. Substring match only if cleanAns is long enough (>= 4 chars)
-        if (result.correctIndex < 0 && cleanAns.length >= 4) {
-          result.correctIndex = q.options.findIndex((o) => {
-            const cleanO = String(o).trim().toLowerCase();
-            return cleanO.includes(cleanAns) || cleanAns.includes(cleanO);
-          });
-        }
+        if (byText >= 0) correctIndices = [byText];
       }
-      if (result.correctIndex < 0 && item.explanation) {
-        const expMatch = String(item.explanation).match(/(?:chọn|đáp án|phương án)\s*([A-D])/i);
-        if (expMatch) {
-          result.correctIndex = expMatch[1].toUpperCase().charCodeAt(0) - 65;
-        }
-      }
+      result.correctIndices = correctIndices;
+      result.correctIndex = correctIndices[0] ?? -1;
+      if (!result.answer && result.correctIndex >= 0) result.answer = (q.options && q.options[result.correctIndex]) || '';
       if (result.correctIndex < 0) {
-        result.correctIndex = 0;
+        result.unresolved = true;
+        result.reason = 'no-correct-indices';
       }
-      if (!result.answer) result.answer = q.options[result.correctIndex] || '';
+    } else if (Array.isArray(q.options) && q.options.length) {
+      // --- Sửa lỗi: index và nội dung answer phải khớp nhau ---
+      // Trước đây khi model trả correctIndex sai (vd 9) code reset về 0 nhưng
+      // vẫn giữ answer gốc, khiến fillCurrentQuestion click nhầm đáp án A.
+      const rawIndex = item.correctIndex ?? item.index;
+      const idxFromIndex = normalizeIndex(rawIndex, q.options.length);
+      const idxFromAnswer = item.answer ? matchOptionIndex(item.answer, q.options) : -1;
+
+      let chosen = -1;
+      if (idxFromIndex >= 0 && idxFromAnswer >= 0 && idxFromIndex !== idxFromAnswer) {
+        // Nội dung answer khớp được 1 đáp án cụ thể nhưng index không khớp
+        // -> tin nội dung answer (model thường chép lại đáp án đúng).
+        chosen = idxFromAnswer;
+      } else if (idxFromIndex >= 0) {
+        chosen = idxFromIndex;
+      } else if (idxFromAnswer >= 0) {
+        chosen = idxFromAnswer;
+      } else if (item.explanation) {
+        const expMatch = String(item.explanation).match(/(?:chọn|đáp án|phương án)\s*\(?([A-D])\)?/i);
+        if (expMatch) {
+          const n = expMatch[1].toUpperCase().charCodeAt(0) - 65;
+          if (n >= 0 && n < q.options.length) chosen = n;
+        }
+      }
+
+      result.correctIndex = chosen;
+      if (chosen < 0) {
+        // Index được cung cấp nhưng nằm ngoài phạm vi -> dữ liệu model sai.
+        // Báo lỗi để batch thử lại. TUYỆT ĐỐI không fallback sang đáp án A.
+        if (rawIndex !== undefined && rawIndex !== null && rawIndex !== '') {
+          throw new Error(`Invalid answer index ${rawIndex} for ${id}`);
+        }
+        // KHÔNG đoán bừa đáp án A. Đánh dấu unresolved để xử lý lại.
+        result.unresolved = true;
+        result.reason = 'unmatched-answer';
+      } else {
+        result.answer = q.options[chosen] || result.answer || '';
+      }
+    } else if (['dropdown', 'drag_drop', 'grouping', 'matching', 'hotspot', 'essay', 'word_select', 'underline'].includes(q.type)) {
+      // Các dạng mới: giữ nguyên dữ liệu model trả về, chỉ chuẩn hoá.
+      if (q.type === 'dropdown') {
+        const idx = normalizeIndex(item.correctIndex ?? item.answer, q.options.length);
+        if (idx >= 0) {
+          result.correctIndex = idx;
+          result.answer = q.options[idx] || result.answer || '';
+        } else {
+          result.unresolved = true;
+          result.reason = 'dropdown-unmatched';
+        }
+      } else if (q.type === 'matching') {
+        result.pairs = Array.isArray(item.pairs) ? item.pairs : [];
+        if (!result.pairs.length) { result.unresolved = true; result.reason = 'missing-pairs'; }
+      } else if (q.type === 'drag_drop' || q.type === 'grouping') {
+        result.mapping = Array.isArray(item.mapping) ? item.mapping : [];
+        if (!result.mapping.length) { result.unresolved = true; result.reason = 'missing-mapping'; }
+      } else if (q.type === 'hotspot') {
+        result.box = item.box && typeof item.box === 'object' ? item.box : null;
+        if (!result.answer) { result.unresolved = true; result.reason = 'missing-hotspot'; }
+      } else if (q.type === 'word_select' || q.type === 'underline') {
+        const idxs = Array.isArray(item.correctIndices)
+          ? item.correctIndices.map(Number).filter((n) => Number.isInteger(n) && n >= 0)
+          : [];
+        result.correctIndices = idxs;
+        if (!idxs.length) { result.unresolved = true; result.reason = 'missing-word-indices'; }
+      } else if (q.type === 'essay') {
+        if (!result.answer) { result.unresolved = true; result.reason = 'missing-essay'; }
+      }
     }
     answers.push(result);
   }
@@ -562,6 +856,43 @@ async function solveBatch(questions, { retries = 1 } = {}) {
     }
   }
   throw lastErr || new Error('Failed to solve batch');
+}
+
+// Tìm chỉ số của đáp án khớp với một chuỗi trả lời tự do của model.
+// Ưu tiên khớp chính xác, sau đó khớp theo chữ cái (A/B/C/D), rồi mới khớp chuỗi con.
+function matchOptionIndex(answerText, options) {
+  if (!answerText || !Array.isArray(options) || !options.length) return -1;
+  const cleanAns = String(answerText).trim().toLowerCase();
+  if (!cleanAns) return -1;
+
+  // Bỏ tiền tố nhãn đáp án ở cả hai vế để so khớp công bằng.
+  const stripLabel = (s) =>
+    String(s).trim().replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim().toLowerCase();
+
+  const ansBody = stripLabel(cleanAns);
+
+  // 1. Khớp chính xác (đã bỏ nhãn)
+  let idx = options.findIndex((o) => stripLabel(o) === ansBody);
+  if (idx >= 0) return idx;
+
+  // 2. Model trả về đúng một chữ cái (A/B/C/D) -> ánh xạ theo vị trí
+  const letterMatch = cleanAns.match(/^(?:đáp án|phương án|lựa chọn|chọn)?\s*[\(\[]?\s*([a-dA-D])\s*[\)\]\.\:]?$/i);
+  if (letterMatch) {
+    const n = letterMatch[1].toUpperCase().charCodeAt(0) - 65;
+    if (n >= 0 && n < options.length) return n;
+  }
+
+  // 3. Khớp chuỗi con (chỉ khi đủ dài để tránh trùng số/ chữ cái đơn lẻ)
+  if (ansBody.length >= 4) {
+    idx = options.findIndex((o) => {
+      const ob = stripLabel(o);
+      if (!ob) return false;
+      return ob.includes(ansBody) || ansBody.includes(ob);
+    });
+    if (idx >= 0) return idx;
+  }
+
+  return -1;
 }
 
 // Accept a number, a numeric string, or an option letter (A, B, C, D, Đáp án B, (B), [B]).
@@ -614,4 +945,7 @@ module.exports = {
   buildBatchPrompt,
   validateBatchAnswers,
   solveBatch,
+  buildPrompt,
+  normalizeIndex,
+  matchOptionIndex,
 };

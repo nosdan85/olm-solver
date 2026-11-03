@@ -8,6 +8,7 @@
 // falls back to the plain HTTP client.
 
 const H = require('./humanize');
+const extendedTypes = require('./extended-types');
 
 let puppeteer;
 let stealthInstalled = false;
@@ -405,6 +406,16 @@ async function scanCurrentQuestion(page, index, subject, log) {
     }
   }
 
+  // --- Dạng câu hỏi mở rộng (dropdown, kéo-thả, gom nhóm, ghép đôi, hotspot,
+  //     gạch chân, tự luận).
+  // Không áp dụng khi dạng cơ bản đã được xử lý tốt (short_answer, true_false,
+  // multi_choice) để không làm hỏng các dạng đang chạy ổn.
+  const BASIC_HANDLED = ['short_answer', 'true_false', 'multi_choice'];
+  let extended = null;
+  if (!BASIC_HANDLED.includes(data?.type)) {
+    extended = await extendedTypes.detect(page);
+  }
+
   // Check if question has visual content (images, diagrams, latex formulas)
   const hasImage = await page.evaluate(() => {
     const root = document.querySelector('default-root')?.shadowRoot || document.querySelector('default-root') || document;
@@ -422,45 +433,71 @@ async function scanCurrentQuestion(page, index, subject, log) {
 
   let imageBase64 = null;
   // Always capture high-res question bounding box screenshot for visual questions or short answer
-  if (hasImage || data?.type === 'short_answer') {
+  if (hasImage || data?.type === 'short_answer' || extended) {
     if (log) log('info', `📸 Câu ${index + 1}: Chụp ảnh câu hỏi gửi AI Vision phân tích chi tiết...`);
     try {
       const box = await page.evaluate(() => {
-        const el = document.querySelector('default-root') || document.querySelector('.previewquiz, .card, #question-container, .main-content');
-        if (el) {
-          const r = el.getBoundingClientRect();
-          if (r.width > 80 && r.height > 80) {
-            return {
-              x: Math.max(0, Math.floor(r.x)),
-              y: Math.max(0, Math.floor(r.y)),
-              width: Math.min(window.innerWidth, Math.ceil(r.width)),
-              height: Math.min(window.innerHeight, Math.ceil(r.height)),
-            };
-          }
+        // Ưu tiên element CHỨA CÂU HỎI, không phải toàn bộ trang.
+        // Trước đây chụp `default-root` (cả trang) khiến sơ đồ/công thức bị thu
+        // nhỏ, model đọc sai số liệu.
+        const defRoot = document.querySelector('default-root');
+        const root = defRoot?.shadowRoot || defRoot || document;
+        const selectors = [
+          'type-quiz-x-mobile', 'type-quiz-x', 'type-quiz-multi-mobile', 'type-quiz-multi',
+          'type-true-false-mobile', 'type-true-fasle', 'type-fill-me-mobile', 'type-fill-me',
+          'type-paragraph-mobile', 'type-paragraph',
+          '.question-content', '#question-container', '.question-container',
+        ];
+        let el = null;
+        for (const sel of selectors) {
+          const found = root.querySelector(sel) || document.querySelector(sel);
+          if (found) { el = found; break; }
         }
-        return null;
+        if (!el) el = document.querySelector('default-root') || document.querySelector('.previewquiz, .card, .main-content');
+        if (!el) return null;
+
+        const r = el.getBoundingClientRect();
+        if (r.width <= 50 || r.height <= 50) return null;
+
+        // Ép element vào giữa viewport trước khi chụp để không bị cắt.
+        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+
+        return {
+          x: Math.max(0, Math.floor(r.x)),
+          y: Math.max(0, Math.floor(r.y)),
+          width: Math.min(window.innerWidth, Math.ceil(r.width)),
+          height: Math.min(window.innerHeight, Math.ceil(r.height)),
+        };
       });
       if (box && box.width > 50 && box.height > 50) {
-        imageBase64 = await page.screenshot({ clip: box, encoding: 'base64', type: 'jpeg', quality: 85 });
+        // deviceScaleFactor=2 + quality cao để công thức/sơ đồ đọc được.
+        imageBase64 = await page.screenshot({ clip: box, encoding: 'base64', type: 'jpeg', quality: 92 });
       } else {
-        imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 });
+        imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 88 }).catch(() => null);
       }
     } catch {
-      imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+      imageBase64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 85 }).catch(() => null);
     }
   }
 
-  return {
+  const result = {
     id: `q_${index + 1}`,
     index,
     subject,
-    type: data?.type || 'choice',
-    text: data?.text || '',
-    options: data?.options || [],
+    type: extended?.type || data?.type || 'choice',
+    text: extended?.text || data?.text || '',
+    options: extended?.options || data?.options || [],
     statements: data?.statements || [],
+    items: extended?.items || [],
+    targets: extended?.targets || [],
+    left: extended?.left || [],
+    right: extended?.right || [],
+    zones: extended?.zones || [],
+    words: extended?.words || [],
     imageBase64,
     hasImage,
   };
+  return result;
 }
 
 async function fillCurrentQuestion(page, question, answer) {
@@ -499,7 +536,12 @@ async function fillCurrentQuestion(page, question, answer) {
 
   // 2. True / False table (<type-true-false-mobile>, <type-true-fasle>)
   if (question.type === 'true_false') {
-    return page.evaluate(({ answer }) => {
+    // KHÔNG được đoán "toàn bộ Đúng" khi model không trả về mệnh đề nào.
+    const statements = Array.isArray(answer.statements) ? answer.statements : [];
+    if (!statements.length) {
+      return { ok: false, reason: 'missing-statements' };
+    }
+    return page.evaluate(({ answer, statements }) => {
       const defRoot = document.querySelector('default-root');
       const root = defRoot?.shadowRoot || defRoot || document;
       const tf = root.querySelector('type-true-false-mobile, type-true-fasle, type-tf-mobile, type-true-false');
@@ -507,9 +549,11 @@ async function fillCurrentQuestion(page, question, answer) {
       const rows = Array.from(compRoot.querySelectorAll('.tf-row, tr, [class*="statement"]'))
         .filter(r => r.querySelectorAll('button, td, span, div, input').length >= 2);
 
-      const statements = Array.isArray(answer.statements) ? answer.statements : [true, true, true, true];
+      let filled = 0;
       rows.forEach((row, i) => {
-        const isTrue = Boolean(statements[i] ?? true);
+        // Nếu vượt quá số mệnh đề model trả về -> bỏ qua, KHÔNG mặc định "Đúng".
+        if (i >= statements.length) return;
+        const isTrue = Boolean(statements[i]);
         const targetText = isTrue ? 'Đ' : 'S';
         const buttons = Array.from(row.querySelectorAll('button, td, span, div, input'));
         const btn = buttons.find((el) => {
@@ -519,10 +563,17 @@ async function fillCurrentQuestion(page, question, answer) {
         if (btn) {
           btn.click();
           btn.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+          filled++;
         }
       });
-      return { ok: true };
-    }, { answer });
+      return { ok: filled > 0, filled, rows: rows.length };
+    }, { answer, statements });
+  }
+
+  // 2b. Các dạng câu hỏi mở rộng (dropdown, kéo-thả, gom nhóm, ghép đôi,
+  //     hotspot, gạch chân, tự luận) -> xử lý ở module chuyên dụng.
+  if (extendedTypes.isExtended(question.type)) {
+    return extendedTypes.fill(page, question, answer);
   }
 
   // 3. Multi-choice / "Chọn những câu đúng thôi" (<type-quiz-multi-mobile>)
@@ -535,7 +586,10 @@ async function fillCurrentQuestion(page, question, answer) {
       const optionEls = Array.from(compRoot.querySelectorAll('.qselect, [ind], .choice-item, .option'));
       if (!optionEls.length) return { ok: false, reason: 'no-options-found' };
 
-      const correctSet = new Set(Array.isArray(answer.correctIndices) ? answer.correctIndices : [0]);
+      const correctSet = new Set(Array.isArray(answer.correctIndices) ? answer.correctIndices : []);
+      // KHÔNG tự chọn đáp án A khi AI không xác định được.
+      if (!correctSet.size) return { ok: false, reason: 'no-correct-indices' };
+      let selected = 0;
       optionEls.forEach((el, idx) => {
         const shouldSelect = correctSet.has(idx);
         const isSelected = el.classList.contains('tw-selected') || el.classList.contains('selected') || el.classList.contains('active') || !!el.querySelector('input:checked');
@@ -544,8 +598,9 @@ async function fillCurrentQuestion(page, question, answer) {
           el.click();
           el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         }
+        if (shouldSelect) selected++;
       });
-      return { ok: true };
+      return { ok: selected > 0, selected };
     }, { answer });
   }
 
@@ -608,10 +663,11 @@ async function fillCurrentQuestion(page, question, answer) {
       if (chosen) targetIdx = optionEls.indexOf(chosen);
     }
 
-    // D. Safe fallback: click option 0
+    // D. KHÔNG đoán bừa đáp án A.
+    // Trước đây fallback click optionEls[0], tức submit đáp án sai với full
+    // confidence khi AI không xác định được. Giờ trả lỗi để câu được xử lý lại.
     if (!chosen) {
-      chosen = optionEls[0];
-      targetIdx = 0;
+      return { ok: false, reason: 'answer-unmatched' };
     }
 
     chosen.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -684,7 +740,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
 
       const startTime = Date.now();
       try {
-        const solved = isSingle && q.hasImage
+        const solved = isSingle && (q.hasImage || q.imageBase64)
           ? [{ id: q.id, ...(await answerEngine.solveQuestion(q, { onLog: (lvl, msg) => log?.(lvl, msg) })) }]
           : await answerEngine.solveBatch(batch);
 
@@ -739,14 +795,25 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal 
   for (const question of questions) {
     if (signal?.aborted) throw new Error('Tiến trình đã bị dừng bởi người dùng');
     let answer = answers.get(question.id);
-    if (!answer || answer.error || (question.type === 'choice' && (answer.correctIndex === undefined || answer.correctIndex < 0))) {
-      if (question.type === 'choice') {
-        answer = { id: question.id, correctIndex: 0, answer: 'A' };
-      } else if (question.type === 'true_false') {
-        answer = { id: question.id, trueFalseAnswers: [true, true, true, true] };
-      } else {
-        answer = { id: question.id, answer: '1' };
-      }
+    if (!answer || answer.error || answer.unresolved ||
+        (question.type === 'choice' && (answer.correctIndex === undefined || answer.correctIndex < 0)) ||
+        (question.type === 'multi_choice' && !(answer.correctIndices || []).length) ||
+        (question.type === 'true_false' && !(answer.statements || []).length)) {
+      // KHÔNG đoán bừa đáp án A / toàn bộ "Đúng".
+      // Thử giải lại riêng câu này bằng Vision (có ảnh) trước khi bỏ qua.
+      if (log) log('warn', `⚠️ Câu ${question.index + 1}: AI không xác định được đáp án, đang thử giải lại riêng...`);
+      try {
+        const retry = await answerEngine.solveQuestion(question, { onLog: (lvl, msg) => log?.(lvl, msg) });
+        if (retry && !retry.unresolved && retry.correctIndex !== -1) {
+          answer = { ...retry, id: question.id };
+        }
+      } catch {}
+    }
+    if (!answer || answer.unresolved || answer.error) {
+      if (log) log('warn', `⚠️ Câu ${question.index + 1}: Không xác định được đáp án, bỏ qua câu này.`);
+      failed++;
+      questionStatuses.set(question.id, 'skipped');
+      continue;
     }
 
     let planned = answer;
@@ -985,17 +1052,41 @@ async function solveFlowPractice(page, { homework, config = {}, log, emit, signa
     let answer;
     try {
       answer = await answerEngine.solveQuestion(question, { onLog: (lvl, msg) => log?.(lvl, msg) });
+
+      // Nếu model không xác định được đáp án (correctIndex = null hoặc -1),
+      // thử lại bằng cách gửi kèm ảnh + yêu cầu bắt buộc chọn.
+      // TUYỆT ĐỐI KHÔNG đoán bừa đáp án A.
+      let attempts = 0;
+      while (answer.unresolved && attempts < 2) {
+        attempts++;
+        if (log) log('warn', `⚠️ Câu ${step + 1}: AI không xác định được đáp án (${answer.reason || 'unknown'}), thử lại lần ${attempts}...`);
+        await H.sleep(600);
+        try {
+          const retry = await answerEngine.solveQuestion(
+            { ...question, __requireAnswer: true },
+            { onLog: (lvl, msg) => log?.(lvl, msg) }
+          );
+          if (!retry.unresolved) answer = retry;
+          else if (retry.answer && !answer.answer) answer = retry;
+        } catch {}
+      }
+
       const optLetter = answer.correctIndex >= 0 ? `[Đáp án ${String.fromCharCode(65 + answer.correctIndex)}]` : '';
       const ansText = optLetter ? `${optLetter} ${answer.answer || ''}` : (answer.answer || 'Đã có đáp án');
       if (log) log('success', `✔ Câu ${step + 1} -> ${ansText}`);
     } catch (err) {
-      if (log) log('warn', `⚠️ Câu ${step + 1} gặp lỗi (${err.message}), chọn mặc định`);
-      answer = { correctIndex: 0, answer: 'A' };
+      if (log) log('warn', `⚠️ Câu ${step + 1} gặp lỗi (${err.message}), sẽ bỏ qua đáp án`);
+      // KHÔNG đoán bừa đáp án A. Để correctIndex = -1 để fill báo lỗi,
+      // thay vì submit một đáp án sai với full confidence.
+      answer = { correctIndex: -1, answer: '', unresolved: true, reason: 'solve-error' };
     }
 
     // 4. Fill answer
     await H.sleep(H.randInt(100, 180));
-    const fillRes = await fillCurrentQuestion(page, question, answer);
+    let fillRes = { ok: false, reason: 'unresolved' };
+    if (!answer.unresolved || answer.correctIndex >= 0 || answer.answer) {
+      fillRes = await fillCurrentQuestion(page, question, answer);
+    }
     if (!fillRes.ok && log) {
       log('warn', `Câu ${step + 1}: Điền đáp án chưa tối ưu (${fillRes.reason || 'unknown'})`);
     }
@@ -1105,7 +1196,9 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
     await page.authenticate({ username: proxy.username, password: proxy.password }).catch(() => {});
   }
 
-  await page.setViewport({ width: 1366, height: 900 });
+  // deviceScaleFactor=2 -> ảnh chụp sắc nét hơn gấp 2, giúp Vision AI đọc
+  // đúng công thức/sơ đồ (bài Hóa 12 nhiều công thức).
+  await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 });
   await page.setUserAgent(H.pick(require('./olm-client').USER_AGENTS));
 
   // Inject session cookies if provided

@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+node_modules
+/data
+.browser-profile
+screenshots
+scratch
+cloudflared.exe
+*.log
+/dist

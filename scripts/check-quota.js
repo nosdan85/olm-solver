@@ -104,14 +104,23 @@ function describe(res) {
 (async () => {
   // The Gemini key lives in FALLBACK_API_KEY when the primary provider is
   // OpenAI/opencode zen; fall back to OPENAI_API_KEY for a Gemini-only setup.
-  const key = process.env.FALLBACK_API_KEY || process.env.OPENAI_API_KEY;
-  if (!key) {
-    console.error('Thiếu FALLBACK_API_KEY (hoặc OPENAI_API_KEY) trong .env');
-    process.exit(1);
+  const isGemini = (value) => {
+    try {
+      return new URL(value).origin === 'https://generativelanguage.googleapis.com';
+    } catch {
+      return false;
+    }
+  };
+  const key = (isGemini(process.env.FALLBACK_BASE_URL) && process.env.FALLBACK_API_KEY) ||
+    (isGemini(process.env.OPENAI_BASE_URL) && process.env.OPENAI_API_KEY);
+  if (!key || /^PASTE_/.test(key)) {
+    console.error('Chưa cấu hình API key cho endpoint Gemini trong .env.');
+    process.exitCode = 1;
+    return;
   }
 
   const models = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_MODELS;
-  console.log(`\n  Kiểm tra quota Gemini free tier — key: ${key.slice(0, 8)}...\n`);
+  console.log('Kiểm tra quota Gemini.');
 
   for (const model of models) {
     let d = { state: 'LỖI', detail: '' };

@@ -1,12 +1,6 @@
 'use strict';
 
 const { CookieJar } = require('tough-cookie');
-const cookieJarSupport = require('axios-cookiejar-support');
-const wrapper = cookieJarSupport.wrapper || cookieJarSupport;
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-
 // Stealth: these UAs are all shipped by real browsers. Rotating them keeps
 // requests from looking like a single fingerprint hammering the site.
 const USER_AGENTS = [
@@ -40,6 +34,48 @@ function baseHeaders(ua) {
 
 // ---------------------------------------------------------------- OLM client
 
+function trustedOlmUrl(value, base = process.env.OLM_BASE_URL || 'https://olm.vn') {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('URL OLM không hợp lệ.');
+  const origin = new URL(base);
+  const url = new URL(value, origin);
+  const isOlm = (host) => host === 'olm.vn' || host.endsWith('.olm.vn');
+  const allowed = url.origin === origin.origin ||
+    (isOlm(origin.hostname) && isOlm(url.hostname) && url.protocol === 'https:' && !url.port);
+  if (!allowed || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('URL nằm ngoài máy chủ OLM đã cấu hình.');
+  }
+  return url.href;
+}
+
+function validateSubmission(response) {
+  const { status, data } = response;
+  if (status < 200 || status >= 300) throw new Error('OLM từ chối nộp bài (HTTP ' + status + ').');
+  if (status === 204) return;
+  const reject = () => { throw new Error('OLM báo chưa nộp được bài.'); };
+  const failure = /(?:chưa|không thể|không) (?:xác nhận (?:đã )?)?nộp bài|nộp bài (?:không thành công|thất bại)/i;
+  const success = /nộp bài thành công|đã nộp bài|bài (?:làm )?đã (?:được )?nộp|đã ghi nhận bài làm|bài làm đang được chấm/i;
+  if (data && typeof data === 'object') {
+    const rejected = value => value && (value.ok === false || value.success === false || value.submitted === false ||
+      value.error || /^(?:error|failed|failure)$/i.test(value.status) || failure.test(value.message || ''));
+    const accepted = value => value && (value.ok === true || value.success === true || value.submitted === true ||
+      value.ended === true || value.ended === 1 || value.ended === '1' ||
+      /^(?:success|submitted|finished)$/i.test(value.status) || /^(?:success|ok)$/i.test(value.message) || success.test(value.message || ''));
+    const values = [data, data.data, data.result];
+    if (values.some(rejected)) reject();
+    if (values.some(accepted)) return;
+  }
+  if (typeof data === 'string') {
+    const $ = require('cheerio').load(data);
+    $('script, style, template, [hidden], [aria-hidden="true"]').remove();
+    $('[style]').filter((_, el) => /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)\s*(?:!important\s*)?(?:;|$)/i.test($(el).attr('style'))).remove();
+    const text = $('body').text().replace(/\s+/g, ' ').trim();
+    if ($('input[type=password]').length || failure.test(text)) reject();
+    if (success.test(text) ||
+        /kết quả (?:bài làm|luyện tập|bài thi)/i.test(text) && /\d+(?:[.,]\d+)?\s*(?:\/\s*(?:100|10)(?!\d)|điểm)/i.test(text)) return;
+  }
+  throw Object.assign(new Error('OLM chưa xác nhận đã nộp bài.'), { code: 'SUBMISSION_UNCONFIRMED' });
+}
+
 class OlmClient {
   constructor(cookieJar, ua) {
     this.jar = cookieJar || new CookieJar();
@@ -62,15 +98,20 @@ class OlmClient {
     return this.jar.toJSON();
   }
 
-  async request(method, url, { data, params, headers, timeout = 20000, allowRedirects = true } = {}) {
+  async request(method, url, { data, params, headers, timeout = 20000, allowRedirects = true, signal, responseType, maxContentLength } = {}) {
     const res = await this.http.request({
       method,
-      url,
+      url: trustedOlmUrl(url, this.baseUrl),
       data,
       params,
       timeout,
-      allowRedirects,
-      maxRedirects: 5,
+      signal,
+      responseType,
+      maxContentLength,
+      maxRedirects: allowRedirects ? 5 : 0,
+      beforeRedirect: (options) => {
+        trustedOlmUrl(options.href, this.baseUrl);
+      },
       headers: { ...baseHeaders(this.ua), ...(headers || {}) },
       validateStatus: (status) => status >= 100 && status < 600,
     });
@@ -138,6 +179,15 @@ class OlmClient {
       }
     }
 
+    if (!data || typeof data !== 'object' ||
+        ![data.ok, data.success, data.status, data.message].some((value) => value === true || value === 'success')) {
+      const confirmed = await this.getAuthenticatedUsername();
+      const loginInput = String(username || '').trim();
+      const isEmailOrPhone = loginInput.includes('@') || /^\+?\d[\d\s.-]{6,}$/.test(loginInput);
+      if (!confirmed || (!isEmailOrPhone && confirmed.toLowerCase() !== loginInput.toLowerCase())) {
+        throw new Error('OLM không xác nhận đúng tài khoản đăng nhập.');
+      }
+    }
     const cookies = await this.jar.getCookies(this.baseUrl);
     if (!cookies || cookies.length === 0) {
       throw new Error('OLM không trả về session cookie. Vui lòng thử lại.');
@@ -146,11 +196,37 @@ class OlmClient {
     return { ok: true, cookies: cookies.length };
   }
 
+  async getAuthenticatedUsername() {
+    const url = process.env.OLM_PROFILE_URL || this.baseUrl + '/lop-hoc-cua-toi';
+    const res = await this.request('GET', url, { timeout: 15000 });
+    if (res.status === 200) {
+      const data = res.data;
+      if (data && typeof data === 'object' && data.authenticated !== false) {
+        const username = data.user?.username || data.data?.user?.username;
+        if (typeof username === 'string' && username.trim()) return username.trim();
+      }
+      if (typeof data === 'string') {
+        const userMatch = data.match(/window\._data_classroom\s*=\s*\{.*?"user"\s*:\s*\{.*?"username"\s*:\s*"([^"]+)"/s) ||
+          data.match(/"user"\s*:\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/) ||
+          data.match(/"username"\s*:\s*"([^"]+)"/);
+        if (userMatch && userMatch[1] && userMatch[1].trim()) return userMatch[1].trim();
+
+        const $ = require('cheerio').load(data);
+        const signedIn = $('a[href*="dangxuat"], a[href*="logout"], form[action*="logout"], form[action*="dangxuat"]').length > 0;
+        const username = $('meta[name="auth-username"]').attr('content') ||
+          $('#current-user[data-username], .current-user[data-username]').first().attr('data-username') ||
+          $('input[name="username"][readonly]').first().val();
+        if (signedIn && typeof username === 'string' && username.trim()) return username.trim();
+      }
+    }
+    throw new Error('OLM chưa xác nhận tài khoản đăng nhập.');
+  }
+
   // Look at the real login form so we post the fields OLM actually expects.
   async probeLoginFields() {
     const fallback = { username: 'username', password: 'password', extra: {} };
     try {
-      const res = await this.request('GET', this.loginUrl, { timeout: 20000 });
+      const res = await this.request('GET', this.loginPageUrl, { timeout: 20000 });
       const html = typeof res.data === 'string' ? res.data : '';
       if (!html) return fallback;
 
@@ -190,15 +266,17 @@ class OlmClient {
 
   // Fetch the homework list. Uses OLM's official student courseware API first,
   // falling back to scraping if unavailable.
-  async fetchHomeworks() {
+  async fetchHomeworks({ signal, coursewareOnly = false } = {}) {
     const allRawItems = [];
     let page = 1;
     let lastPage = 1;
+    let foundCoursewareList = false;
 
     try {
-      while (page <= lastPage) {
+      while (page <= Math.min(lastPage, 50)) {
         const apiUrl = `${this.baseUrl}/classes/courseware/list-courseware-of-student?page=${page}&limit=50`;
         const res = await this.request('GET', apiUrl, {
+          signal,
           headers: {
             'Accept': 'application/json, text/plain, */*',
             'X-Requested-With': 'XMLHttpRequest',
@@ -208,13 +286,17 @@ class OlmClient {
         });
 
         if (res.status === 200 && res.data && Array.isArray(res.data.list)) {
+          foundCoursewareList = true;
           allRawItems.push(...res.data.list);
           if (res.data.pagi_info?.last) {
             lastPage = Number(res.data.pagi_info.last);
-          } else {
+          } else if (res.data.pagi_info?.total_page) {
+            lastPage = Number(res.data.pagi_info.total_page);
+          }
+          if (res.data.list.length === 0) {
             break;
           }
-          if (res.data.list.length === 0 || !res.data.pagi_info?.hasNextPage) {
+          if (page >= lastPage) {
             break;
           }
           page++;
@@ -223,37 +305,104 @@ class OlmClient {
         }
       }
 
-      if (allRawItems.length > 0) {
+      if (foundCoursewareList) {
         const items = allRawItems.map((item) => {
           const hwUrl = item._url || item.url || '';
           const abs = hwUrl.startsWith('http') ? hwUrl : new URL(hwUrl, this.baseUrl).toString();
           const subject = item.subject?.title || (item.group?.group_name ? `Lớp ${item.group.group_name}` : '');
-          const status = item.isDone ? 'Đã xong' : (item.isExpired ? 'Hết hạn' : 'Chưa làm');
-          const deadline = item.expiredDate || (item.deadlineTimestamp ? new Date(item.deadlineTimestamp * 1000).toLocaleDateString('vi-VN') : '');
-          const rawStr = JSON.stringify(item);
-          const canRetry = Boolean(
-            item.can_retry ||
-            item.allow_redo ||
-            item.practice_again ||
-            item.canPracticeAgain ||
-            item.is_redo ||
-            (item.record && (item.record.can_retry || item.record.allow_redo || item.record.practice_again)) ||
-            (item.btn_text && /luyện\s*tập|làm\s*lại/i.test(item.btn_text)) ||
-            /luyện\s*tập\s*lại|làm\s*lại|practice_again/i.test(rawStr) ||
-            (item.isDone && !item.isExpired && item.can_retry !== false)
+
+          // Nhận diện trạng thái hoàn thành thực sự của bài tập:
+          // Một bài chỉ coi là ĐÃ XONG (isDone = true) khi:
+          // 1. OLM API xác nhận item.isDone === true, HOẶC
+          // 2. Có bản ghi nộp bài hoàn tất: item.record.ended === 1 HOẶC (item.record.date_end > 0 && item.record.totalq > 0)
+          // Nếu học sinh chỉ mới bấm vào bài (tạo user_history_id) hoặc mới làm dở một vài câu (ended === 0, date_end === 0)
+          // thì TUYỆT ĐỐI KHÔNG coi là đã làm, mà phải giữ nguyên ở danh sách "Chưa làm"!
+          const isReallyDone = Boolean(
+            item.isDone === true ||
+            [1, '1', true].includes(item.record?.ended) ||
+            (item.record && Number(item.record.date_end) > 0 && Number(item.record.totalq) > 0)
           );
+
+          // Kiểm tra xem bài có đang làm dở không
+          const isInProgress = !isReallyDone && Boolean(
+            [0, '0', false].includes(item.record?.ended) ||
+            item.user_history_id ||
+            (item.num_done && Number(item.num_done) > 0)
+          );
+
+          const isDone = isReallyDone;
+          const deadline = item.expiredDate || (item.deadlineTimestamp ? new Date(item.deadlineTimestamp * 1000).toLocaleDateString('vi-VN') : '');
+          const prefix = item.cate?.prefix || item.cate?.name || item.type_name || '';
+          const isExamType = /đề thi|đề thông minh|kiểm tra|kiem tra|(?<![\p{L}\p{N}])thi(?![\p{L}\p{N}])/iu.test(prefix) || [2, 10, 13, 14, 21].includes(Number(item.cate?.type));
+          const isPracticePrefix = /luyện tập/i.test(prefix) || Number(item.cate?.type) === 3;
+          const opts = (item.options && !Array.isArray(item.options) && typeof item.options === 'object') ? item.options : {};
+          const optRedo = opts.redo !== undefined ? Number(opts.redo) : undefined;
+          const optLimitRedo = opts.limit_redo !== undefined ? Number(opts.limit_redo) : 0;
+          const doneRedoCount = Number(item.record?.count_redo ?? item.record?.num_redo ?? (isDone ? 1 : 0));
+          // Lưu ý: Trên OLM, limit_redo === 0 nghĩa là KHÔNG GIỚI HẠN số lần làm lại (khi redo === 1).
+          // Còn limit_redo > 0 là giới hạn số lần làm tối đa.
+          const hitRedoLimit = optLimitRedo > 0 && doneRedoCount >= optLimitRedo;
+
+          let canRetry = false;
+          if (isDone && !item.isExpired) {
+            if (optRedo === 0 || hitRedoLimit) {
+              canRetry = false;
+            } else if (optRedo === 1) {
+              canRetry = true;
+            } else if (isPracticePrefix && !/đề thi|kiểm tra|đề thông minh/i.test(prefix)) {
+              canRetry = true;
+            } else if (!isExamType) {
+              canRetry = true;
+            }
+          }
+
+          let status = 'Chưa làm';
+          if (isDone) {
+            status = 'Đã xong';
+          } else if (item.isExpired) {
+            status = 'Hết hạn';
+          } else if (isInProgress) {
+            const doneQ = item.record?.correct !== undefined ? (item.record.correct + (item.record.wrong || 0)) : 0;
+            status = doneQ > 0 ? `Đang làm dở (${doneQ} câu)` : 'Đang làm dở';
+          }
+          let categoryType = 'practice';
+          if (/ma trận|matrix/i.test(prefix)) {
+            categoryType = 'matrix_exam';
+          } else if (/pdf|phiếu tô|omr/i.test(prefix)) {
+            categoryType = 'pdf_exam';
+          } else if (/tự luận|tu luan|essay/i.test(prefix)) {
+            categoryType = 'essay';
+          } else if (isExamType) {
+            categoryType = 'exam';
+          } else if (/video tương tác|interactive/i.test(prefix)) {
+            categoryType = 'interactive_video';
+          } else if (/lý thuyết|video|bài giảng|bai giang/i.test(prefix)) {
+            categoryType = 'theory';
+          } else if (/sgk|học liệu|hoc lieu|sách giáo khoa/i.test(prefix)) {
+            categoryType = 'textbook';
+          } else if (/đấu trường|dau truong|trò chơi|game/i.test(prefix)) {
+            categoryType = 'game';
+          } else if (/scorm|slide/i.test(prefix)) {
+            categoryType = 'scorm';
+          } else if (/linh hoạt/i.test(prefix)) {
+            categoryType = 'flex_practice';
+          } else {
+            categoryType = 'practice';
+          }
           return {
             id: String(item._id || item.id_skill || item.title),
+            categoryPrefix: prefix,
+            categoryType,
             title: item.title,
             subject,
             deadline,
             status,
             url: abs,
             teacher: item.user?.name || '',
-            isDone: !!item.isDone,
+            isDone: isDone,
             isExpired: !!item.isExpired,
             canRetry,
-            score: item.record?.score_10 ?? null,
+            score: item.record?.score_10 ?? item.record?.score ?? item.score ?? null,
           };
         });
 
@@ -265,8 +414,11 @@ class OlmClient {
         return { url: `${this.baseUrl}/classes/courseware/list-courseware-of-student`, items };
       }
     } catch (err) {
+      signal?.throwIfAborted();
       console.warn(`[fetchHomeworks API] ${err.message}`);
     }
+
+    if (coursewareOnly) return { items: [] };
 
     // Fallback: candidate URLs
     const candidates = [
@@ -279,7 +431,7 @@ class OlmClient {
 
     for (const url of candidates) {
       try {
-        const res = await this.request('GET', url, { timeout: 25000 });
+        const res = await this.request('GET', url, { timeout: 25000, signal });
         if (res.status !== 200) {
           errors.push(`${url} -> HTTP ${res.status}`);
           continue;
@@ -289,6 +441,7 @@ class OlmClient {
         if (items.length > 0) return { url, items };
         errors.push(`${url} -> 0 items parsed`);
       } catch (err) {
+        signal?.throwIfAborted();
         if (err.code === 'NO_SESSION') throw err;
         errors.push(`${url} -> ${err.message}`);
       }
@@ -299,15 +452,34 @@ class OlmClient {
     throw err;
   }
 
-  async fetchHomeworkPage(url) {
-    const res = await this.request('GET', url, { timeout: 25000 });
+  async fetchHomeworkPage(url, { signal } = {}) {
+    const res = await this.request('GET', url, { timeout: 25000, signal });
     if (res.status !== 200) throw new Error(`Homework page HTTP ${res.status}`);
     return typeof res.data === 'string' ? res.data : '';
   }
 
-  async submitHomework(url, payload) {
-    const res = await this.request('POST', url, {
-      data: payload,
+  async fetchQuestionImage(src, referer, signal) {
+    const url = trustedOlmUrl(new URL(src, referer).href, this.baseUrl);
+    const response = await this.request('GET', url, {
+      signal, timeout: 8000, responseType: 'arraybuffer', maxContentLength: 3 * 1024 * 1024,
+      headers: { Referer: referer, Accept: 'image/png,image/jpeg,image/webp' },
+    });
+    const type = String(response.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (response.status !== 200 || !['image/jpeg', 'image/png', 'image/webp'].includes(type) || !response.data?.length) {
+      throw new Error('Không đọc được hình trong câu hỏi bằng HTTP.');
+    }
+    return { type, base64: Buffer.from(response.data).toString('base64') };
+  }
+
+  async submitHomework(url, payload, { method = 'post', signal, homeworkUrl, originalHtml } = {}) {
+    const isGet = method.toLowerCase() === 'get';
+    const form = new URLSearchParams();
+    for (const [name, value] of Object.entries(payload)) {
+      for (const entry of Array.isArray(value) ? value : [value]) form.append(name, entry);
+    }
+    const res = await this.request(isGet ? 'GET' : 'POST', url, {
+      ...(isGet ? { params: form } : { data: form.toString() }),
+      signal,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Referer': url,
@@ -315,6 +487,25 @@ class OlmClient {
       },
       timeout: 25000,
     });
+    try {
+      validateSubmission(res);
+    } catch (error) {
+      if (error.code !== 'SUBMISSION_UNCONFIRMED' || !homeworkUrl || typeof originalHtml !== 'string') throw error;
+      // Some forms redirect to an intermediate page. Confirm a fresh result
+      // by reading the original assignment, without replaying the submission.
+      const hasReceipt = html => {
+        try {
+          validateSubmission({ status: 200, data: html });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (hasReceipt(originalHtml)) throw error;
+      const page = await this.request('GET', homeworkUrl, { timeout: 8000, signal }).catch(() => null);
+      signal?.throwIfAborted();
+      if (page?.status !== 200 || typeof page.data !== 'string' || !hasReceipt(page.data)) throw error;
+    }
     return res;
   }
 }
@@ -423,4 +614,4 @@ function parseHomeworks(html, baseUrl) {
   return items;
 }
 
-module.exports = { OlmClient, parseHomeworks, randomUA, baseHeaders, USER_AGENTS };
+module.exports = { OlmClient, parseHomeworks, randomUA, baseHeaders, USER_AGENTS, trustedOlmUrl, validateSubmission };

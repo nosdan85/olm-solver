@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.OLM_DATA_DIR || path.join(__dirname, '..', 'data');
 const SESSION_FILE = path.join(DATA_DIR, 'sessions.json');
 
 // sessionId -> { id, cookieJar (serialized), createdAt, lastUsed, username }
@@ -14,36 +14,55 @@ function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+function encryptionKey() {
+  const secret = process.env.SESSION_SECRET;
+  return secret ? crypto.createHash('sha256').update(secret).digest() : null;
+}
+
 function load() {
-  ensureDataDir();
   if (!fs.existsSync(SESSION_FILE)) return;
+  const key = encryptionKey();
   try {
     const raw = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
-    for (const [id, s] of Object.entries(raw)) {
-      sessions.set(id, { ...s, createdAt: s.createdAt || Date.now() });
+    let entries = raw;
+    if (raw.version === 1) {
+      if (!key) return;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(raw.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(raw.tag, 'base64'));
+      entries = JSON.parse(Buffer.concat([
+        decipher.update(Buffer.from(raw.data, 'base64')), decipher.final(),
+      ]).toString('utf8'));
     }
-    log('store', `loaded ${sessions.size} session(s) from disk`);
+    for (const [id, { username, cookieJar, ua, createdAt, lastUsed }] of Object.entries(entries)) {
+      sessions.set(id, { id, username, cookieJar, ua, createdAt, lastUsed });
+    }
+    sweep();
+    if (raw.version !== 1) {
+      if (key) persist();
+      else fs.unlinkSync(SESSION_FILE);
+    }
   } catch (err) {
-    log('store', `failed to load sessions: ${err.message}`);
+    log('store', 'failed to load sessions: ' + err.message);
   }
 }
 
-let persistTimer = null;
 function persist() {
-  if (persistTimer) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
+  const key = encryptionKey();
+  if (!key) return;
+  const file = SESSION_FILE + '.tmp';
+  try {
     ensureDataDir();
-    const out = {};
-    for (const [id, s] of sessions) {
-      out[id] = { id: s.id, cookieJar: s.cookieJar, ua: s.ua, createdAt: s.createdAt, lastUsed: s.lastUsed, username: s.username };
-    }
-    try {
-      fs.writeFileSync(SESSION_FILE, JSON.stringify(out, null, 2));
-    } catch (err) {
-      log('store', `failed to persist sessions: ${err.message}`);
-    }
-  }, 500);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const data = Buffer.concat([
+      cipher.update(JSON.stringify(Object.fromEntries(sessions))), cipher.final(),
+    ]);
+    const encoded = { version: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
+    fs.writeFileSync(file, JSON.stringify(encoded), { mode: 0o600 });
+    fs.renameSync(file, SESSION_FILE);
+  } catch (err) {
+    log('store', 'failed to persist sessions: ' + err.message);
+  }
 }
 
 function create(username, cookieJar, ua) {
@@ -54,10 +73,24 @@ function create(username, cookieJar, ua) {
   return s;
 }
 
+function updateCookies(id, cookieJar, ua) {
+  const s = sessions.get(id);
+  if (!s) return null;
+  if (cookieJar) s.cookieJar = cookieJar;
+  if (ua) s.ua = ua;
+  s.lastUsed = Date.now();
+  persist();
+  return s;
+}
+
 function get(id) {
   if (!id) return null;
   const s = sessions.get(id);
   if (!s) return null;
+  if (Date.now() - (s.lastUsed || s.createdAt) > TTL_MS) {
+    destroy(id);
+    return null;
+  }
   s.lastUsed = Date.now();
   return s;
 }
@@ -77,8 +110,8 @@ function list() {
   }));
 }
 
-// Keep sessions persistent (365 days) so user stays logged in until manual logout
-const TTL_MS = 1000 * 60 * 60 * 24 * 365;
+// Expire idle application sessions after seven days.
+const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 function sweep() {
   const now = Date.now();
   let removed = 0;
@@ -98,4 +131,4 @@ function log(scope, msg) {
   console.log(`[${new Date().toISOString()}] [${scope}] ${msg}`);
 }
 
-module.exports = { create, get, destroy, list, load, sweep, log };
+module.exports = { create, updateCookies, get, destroy, list, load, sweep, log };

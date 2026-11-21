@@ -1,5 +1,7 @@
 'use strict';
 
+const { randomUUID } = require('node:crypto');
+const { setTimeout: delay } = require('node:timers/promises');
 const { EventEmitter } = require('events');
 const H = require('./humanize');
 const answerEngine = require('./answer-engine');
@@ -39,7 +41,6 @@ function log(runId, level, message, hwId = null) {
 
   // Broadcast to all SSE clients immediately with 0 delay
   logger.broadcast(entry);
-  bus.emit('log', entry);
 }
 
 function emit(runId, type, payload = {}) {
@@ -47,7 +48,7 @@ function emit(runId, type, payload = {}) {
 }
 
 function subscribe(fn) {
-  const onLog = (data) => fn(data);
+  const onLog = (data) => fn({ ...data, type: 'log' });
   const onEvent = (data) => fn(data);
   logger.bus.on('log', onLog);
   bus.on('run-event', onEvent);
@@ -89,8 +90,7 @@ function cancelSchedule(runId) {
 
 // ------------------------------------------------------------------- Runs
 
-async function startRun({ session, homeworks, config, sessionId }) {
-  const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+async function startRun({ session, homeworks, config, sessionId, runId = randomUUID() }) {
   const abortController = new AbortController();
   const run = {
     id: runId,
@@ -114,19 +114,22 @@ async function startRun({ session, homeworks, config, sessionId }) {
   };
   runs.set(runId, run);
 
-  const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
-  log(runId, 'info', `Bắt đầu tiến trình: ${homeworks.length} bài tập, khoảng điểm "${H.formatScoreTarget(config.scoreTarget)}", đa luồng: ${concurrency} bài/lúc`);
+  const concurrency = Math.max(1, Math.min(10, Number(config.concurrency || Math.min(10, homeworks.length || 1))));
+  log(runId, 'info', `Bắt đầu tiến trình: ${homeworks.length} bài tập, đa luồng: ${concurrency} bài/lúc`);
   emit(runId, 'started', { homeworks: run.homeworks.length, concurrency });
 
   // Do the work in the background so the HTTP request returns immediately.
   (async () => {
     try {
-      await executeRun(run, session, config);
+      const scale = H.SPEEDS[config.speed]?.scale ?? 1;
+      await H.withSpeed(scale, () => executeRun(run, session, config));
       if (run.status !== 'stopped') {
-        run.status = 'done';
-        run.phase = 'done';
-        log(runId, 'success', `Đã hoàn thành toàn bộ ${homeworks.length} bài tập!`);
-        emit(runId, 'done', { status: 'done' });
+        const done = run.homeworks.filter((hw) => hw.result?.submitted === true).length;
+        run.status = done === run.homeworks.length ? 'done' : done ? 'partial' : 'error';
+        run.phase = run.status;
+        log(runId, run.status === 'done' ? 'success' : 'warn', 'Đã nộp ' + done + '/' + run.homeworks.length + ' bài.');
+        if (run.status === 'error') emit(runId, 'error', { status: run.status });
+        else emit(runId, 'done', { status: run.status, completed: done, total: run.homeworks.length });
       }
     } catch (err) {
       if (run.status !== 'stopped') {
@@ -135,6 +138,9 @@ async function startRun({ session, homeworks, config, sessionId }) {
         log(runId, 'error', `Tiến trình gặp lỗi: ${err.message}`);
         emit(runId, 'error', { message: err.message });
       }
+    } finally {
+      run.finishedAt = Date.now();
+      sweepRuns();
     }
   })();
 
@@ -142,9 +148,7 @@ async function startRun({ session, homeworks, config, sessionId }) {
 }
 
 async function executeRun(run, session, config) {
-  const H_speed = config.speed || 'normal';
-  H.setSpeed(H.SPEEDS[H_speed] ? H.SPEEDS[H_speed].scale : 1);
-
+  const signal = run.abortController.signal;
   const { OlmClient } = require('./olm-client');
   const browserEngine = require('./browser-engine');
 
@@ -157,56 +161,122 @@ async function executeRun(run, session, config) {
       browser = await browserEngine.launch();
       run._browser = browser;
     } catch (err) {
+      if (config.engine === 'browser') throw err;
       log(run.id, 'warn', `Khởi tạo browser thất bại (${err.message}); chuyển sang HTTP engine`);
       browser = null;
     }
   }
 
+  let browserEnabled = Boolean(browser);
+  let relaunchPromise = null;
+  async function ensureBrowserConnected() {
+    if (!browserEnabled) return null;
+    if (browser && (typeof browser.isConnected !== 'function' || browser.isConnected())) {
+      return browser;
+    }
+    if (!relaunchPromise) {
+      relaunchPromise = (async () => {
+        log(run.id, 'warn', 'Browser đã ngắt kết nối; đang khởi tạo lại...');
+        try { if (browser) await browser.close().catch(() => {}); } catch {}
+        const next = await browserEngine.launch();
+        browser = next;
+        run._browser = next;
+        return next;
+      })().finally(() => {
+        relaunchPromise = null;
+      });
+    }
+    return relaunchPromise;
+  }
+
+  function normalizeUrl(u) {
+    try {
+      const parsed = new URL(String(u), 'https://olm.vn');
+      parsed.hash = '';
+      return parsed.href.replace(/\/+$/, '');
+    } catch {
+      return String(u || '').trim().replace(/\/+$/, '');
+    }
+  }
+
   const rateGuard = new H.RateGuard({ minGapMs: 1500 });
   const windowSpec = config.submitWindow || null;
-  const concurrency = Math.max(1, Math.min(6, Number(config.concurrency || 2)));
+  const concurrency = Math.max(1, Math.min(10, Number(config.concurrency || Math.min(10, run.homeworks.length))));
 
   async function processHomework(hi) {
     if (run.abortController?.signal?.aborted || run.status === 'stopped') return;
     const hw = run.homeworks[hi];
+    const hwConfig = {
+      ...config,
+      ...(hw.config || {}),
+      scoreTarget: (hw.config && hw.config.scoreTarget !== undefined) ? hw.config.scoreTarget : (config.scoreTarget || '10'),
+      submitDelayMinutes: (hw.config && hw.config.submitDelayMinutes !== undefined) ? Number(hw.config.submitDelayMinutes) : Number(config.submitDelayMinutes || 0),
+    };
     hw.status = 'running';
     emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'running', title: hw.title });
-    log(run.id, 'info', `▶ Bắt đầu xử lý bài [${hi + 1}/${run.homeworks.length}]: "${hw.title}"`, hw.id);
+    log(run.id, 'info', `▶ Bắt đầu xử lý bài [${hi + 1}/${run.homeworks.length}]: "${hw.title}" [Mục tiêu: ${H.formatScoreTarget(hwConfig.scoreTarget)} | Hoãn nộp: ${hwConfig.submitDelayMinutes}p]`, hw.id);
 
-    if (browser) {
+    if (browserEnabled) {
       try {
-        const result = await browserEngine.solveHomework(browser, {
+        const activeBrowser = await ensureBrowserConnected();
+        let result = await browserEngine.solveHomework(activeBrowser, {
           homework: hw,
           session,
-          config,
+          config: hwConfig,
           signal: run.abortController?.signal,
           log: (lvl, msg) => log(run.id, lvl, msg, hw.id),
           emit: (type, payload) => {
+            if (type === 'scheduled') setSubmitTime(hw, new Date(payload.submitAt));
             if (payload?.phase) hw.phase = payload.phase;
             if (type === 'scan-complete') {
               hw.progress.scanned = payload.total || 0;
-              hw.progress.total = payload.total || 0;
+              hw.progress.total = payload.total ?? hw.progress.total;
             } else if (type === 'scan-progress') {
               hw.progress.scanned = payload.completed || 0;
-              hw.progress.total = payload.total || 0;
+              hw.progress.total = payload.total ?? hw.progress.total;
             } else if (type === 'solve-progress') {
-              hw.progress.solved = payload.completed || 0;
+              hw.progress.solved = payload.completed ?? payload.solved ?? 0;
               hw.progress.total = payload.total || hw.progress.total;
             } else if (type === 'fill-progress') {
               hw.progress.filled = payload.filled || 0;
               hw.progress.failed = payload.failed || 0;
               hw.progress.total = payload.total || hw.progress.total;
             }
-            emit(run.id, type, { ...payload, index: hi, hwId: hw.id });
+            for (const key of Object.keys(run.progress)) {
+              run.progress[key] = run.homeworks.reduce((sum, item) => sum + item.progress[key], 0);
+            }
+            emit(run.id, type, { ...payload, completed: payload.completed ?? payload.solved, index: hi, hwId: hw.id });
           },
         });
 
+        if (signal.aborted) return;
+        // Check the assigned work on OLM when the browser missed the receipt.
+        // An older result cannot confirm an attempt to redo the assignment.
+        if (result.submitted !== true && hw.id && hw.isDone === false && !hw.forceRedo) {
+          const confirmationSignal = AbortSignal.any([signal, AbortSignal.timeout(8000)]);
+          let receipt;
+          try {
+            const client = OlmClient.fromSerialized(session.cookieJar, session.ua);
+            const { items } = await client.fetchHomeworks({ signal: confirmationSignal, coursewareOnly: true });
+            receipt = items.find(item => item.id === String(hw.id) && item.isDone && normalizeUrl(item.url) === normalizeUrl(hw.url));
+          } catch {}
+          if (signal.aborted) return;
+          if (receipt) {
+            result = { ...result, phase: 'done', submitted: true, score: receipt.score ?? result.score };
+            log(run.id, 'success', 'OLM xác nhận đã nộp bài trong danh sách bài được giao.', hw.id);
+          }
+        }
         hw.result = result;
-        hw.status = result.failed > 0 ? 'partial' : 'done';
-        const scoreStr = result.score ? ` - Điểm đạt được: ${result.score}đ` : '';
-        log(run.id, 'success', `✔ Hoàn tất bài "${hw.title}" (Đã điền: ${result.filled}/${result.scanned} câu${scoreStr})`, hw.id);
+        hw.status = (result.lockedRedo || result.alreadyCompleted) ? 'skipped' :
+          result.submitted === true ? 'done' : 'error';
+        const score = result.score != null ? ' - Điểm: ' + result.score : '';
+        const unfilled = result.submitted === true && result.failed > 0 ? ` (${result.failed} câu chưa điền được)` : '';
+        log(run.id, hw.status === 'done' ? 'success' : 'warn',
+          (hw.status === 'skipped' ? 'Bỏ qua bài đã hoàn thành hoặc bị khóa: ' :
+            result.submitted === true ? 'Đã nộp: ' : 'Chưa xác nhận nộp: ') + hw.title + score + unfilled, hw.id);
         emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: hw.status, title: hw.title, result });
       } catch (err) {
+        if (signal.aborted) return;
         log(run.id, 'error', `✖ Lỗi bài "${hw.title}": ${err.message}`, hw.id);
         hw.status = 'error';
         hw.result = { error: err.message };
@@ -218,7 +288,7 @@ async function executeRun(run, session, config) {
       let questions;
       let html;
       try {
-        html = await client.fetchHomeworkPage(hw.url);
+        html = await client.fetchHomeworkPage(hw.url, { signal });
         questions = parseQuestions(html, { url: hw.url });
         log(run.id, 'info', `Tìm thấy ${questions.length} câu hỏi`, hw.id);
       } catch (err) {
@@ -236,83 +306,93 @@ async function executeRun(run, session, config) {
         return;
       }
 
-      const results = await answerEngine.solveAll(questions, {
-        onProgress: (i, total, q) => {
-          log(run.id, 'info', `Giải câu ${i + 1}/${total}: ${String(q.text).slice(0, 70)}`, hw.id);
-          emit(run.id, 'progress', { index: i, total, question: String(q.text).slice(0, 120), hwId: hw.id });
-        },
-      });
-
-      const planQuestions = questions.map((q, i) => ({
-        ...q,
-        index: i,
-        correctIndex: results[i]?.correctIndex ?? -1
-      }));
-      const plan = H.planWrongAnswers(planQuestions, config.scoreTarget);
-      const chosen = [];
-      for (let qi = 0; qi < results.length; qi++) {
-        const res = results[qi];
-        const q = questions[qi];
-        let chosenIndex = res.correctIndex;
-        let chosenText = res.answer || '';
-        let isWrong = false;
-
-        if (res.ok && plan.wrongIndices.has(qi)) {
-          const wrong = plan.plannedWrongs?.get(qi);
-          if (wrong) {
-            chosenIndex = wrong.correctIndex;
-            chosenText = wrong.answer || '';
-            isWrong = true;
-          }
-        } else if (!res.ok) {
-          if (q.options.length > 1) {
-            chosenIndex = Math.floor(Math.random() * q.options.length);
-            chosenText = q.options[chosenIndex];
+      try {
+        for (const question of questions) {
+          const sources = [...new Set(question.imageSources || [])];
+          if (question.needsBrowser || sources.length > 4) throw new Error('Dạng hình này cần bộ giải Chromium.');
+          if (sources.length) {
+            question.images = await Promise.all(sources.map(src => client.fetchQuestionImage(src, hw.url, signal)));
           }
         }
-
-        chosen.push({
-          index: qi,
-          questionId: q.id,
-          correctIndex: res.correctIndex,
-          chosenIndex,
-          chosenText,
-          isWrong,
-          explanation: res.explanation || '',
+        const results = await answerEngine.solveAll(questions, {
+          signal,
+          onProgress: (i, total, q) => {
+            log(run.id, 'info', `Giải câu ${i + 1}/${total}: ${String(q.text).slice(0, 70)}`, hw.id);
+            emit(run.id, 'progress', { index: i, total, question: String(q.text).slice(0, 120), hwId: hw.id });
+          },
         });
-      }
 
-      const submitInfo = findSubmitInfo(html, hw.url);
-      const payload = buildSubmitPayload(chosen, questions, submitInfo);
+        const planQuestions = questions.map((q, i) => ({
+          ...q,
+          index: i,
+          correctIndex: results[i]?.correctIndex ?? -1
+        }));
+        const plan = H.planWrongAnswers(planQuestions, hwConfig.scoreTarget);
+        if (results.length !== questions.length) throw new Error('Chưa đủ đáp án cho tất cả câu hỏi.');
+        const chosen = [];
+        for (let qi = 0; qi < results.length; qi++) {
+          const res = results[qi];
+          const q = questions[qi];
+          if (!res?.ok || res.unresolved) throw new Error('Chưa giải được câu ' + (qi + 1) + '.');
+          let chosenIndex = res.correctIndex;
+          let chosenText = res.answer || '';
+          let isWrong = false;
 
-      const timing = H.resolveSubmitWindow(windowSpec);
-      const submitAt = timing.submitAt;
-      run.submitAt = submitAt;
+          if (res.ok && plan.wrongIndices.has(qi)) {
+            const wrong = plan.plannedWrongs?.get(qi);
+            if (wrong) {
+              chosenIndex = wrong.correctIndex;
+              chosenText = wrong.answer || '';
+              isWrong = true;
+            }
+          }
 
-      await new Promise((resolve) => {
-        const waitMs = Math.max(0, submitAt.getTime() - Date.now());
-        if (waitMs === 0) return resolve();
-        log(run.id, 'info', `Nộp bài sau ${Math.round(waitMs / 1000)}s...`, hw.id);
-        const t = setTimeout(resolve, waitMs);
-        if (t.unref) t.unref();
-      });
+          chosen.push({
+            index: qi,
+            questionId: q.id,
+            correctIndex: res.correctIndex,
+            chosenIndex,
+            chosenText,
+            fillAnswers: !isWrong ? res.fillAnswers : null,
+            chosenIndices: !isWrong ? res.correctIndices : null,
+            isWrong,
+            explanation: res.explanation || '',
+          });
+        }
 
-      await rateGuard.waitForSlot();
-
-      try {
-        const res = await client.submitHomework(submitInfo.action, payload);
-        const ok = res.status >= 200 && res.status < 400;
-        log(run.id, ok ? 'success' : 'error', `Nộp bài hoàn tất (HTTP ${res.status})`, hw.id);
-        hw.status = ok ? 'done' : 'error';
-        hw.result = { engine: 'http', status: res.status, action: submitInfo.action };
+        const submitInfo = findSubmitInfo(html, hw.url);
+        if (!submitInfo.action) throw new Error('Không tìm thấy form nộp bài.');
+        const payload = buildSubmitPayload(chosen, questions, submitInfo);
+        const timing = H.resolveSubmitWindow(windowSpec);
+        const submitAt = new Date(Math.max(timing.submitAt.getTime(), Date.now() + hwConfig.submitDelayMinutes * 60000));
+        setSubmitTime(hw, submitAt);
+        const wait = Math.max(0, submitAt.getTime() - Date.now());
+        if (wait) {
+          emit(run.id, 'scheduled', { submitAt, hwId: hw.id });
+          await delay(wait, undefined, { signal });
+        }
+        await rateGuard.waitForSlot({ signal });
+        const response = await client.submitHomework(submitInfo.action, payload, {
+          method: submitInfo.method, signal, homeworkUrl: hw.url, originalHtml: html,
+        });
+        log(run.id, 'success', 'OLM xác nhận đã nộp bài.', hw.id);
+        hw.status = 'done';
+        hw.result = { engine: 'http', status: response.status, submitted: true };
         emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: hw.status });
       } catch (err) {
-        log(run.id, 'error', `Submit failed: ${err.message}`, hw.id);
+        if (signal.aborted) return;
+        log(run.id, 'error', `Tác vụ chưa hoàn tất: ${err.message}`, hw.id);
         hw.status = 'error';
         hw.result = { error: err.message };
         emit(run.id, 'homework-status', { index: hi, hwId: hw.id, status: 'error', error: err.message });
       }
     }
+  }
+
+  function setSubmitTime(hw, time) {
+    hw.submitAt = time;
+    const pending = run.homeworks.map(item => item.submitAt?.getTime()).filter(time => Number.isFinite(time) && time >= Date.now());
+    run.submitAt = pending.length ? new Date(Math.min(...pending)) : null;
   }
 
   try {
@@ -328,7 +408,11 @@ async function executeRun(run, session, config) {
         if (run.abortController?.signal?.aborted || run.status === 'stopped') break;
         const hi = queue.shift();
         if (hi === undefined) break;
-        await processHomework(hi);
+        try {
+          await processHomework(hi);
+        } finally {
+          setSubmitTime(run.homeworks[hi], null);
+        }
         if (run.abortController?.signal?.aborted || run.status === 'stopped') break;
         if (queue.length > 0) {
           const rest = H.randInt(800, 1500);
@@ -341,31 +425,46 @@ async function executeRun(run, session, config) {
   } finally {
     if (browser) await browser.close().catch(() => null);
     run._browser = null;
+    if (signal.aborted) {
+      for (const hw of run.homeworks) {
+        if (hw.status === 'pending' || hw.status === 'running') hw.status = 'stopped';
+      }
+    }
   }
 }
 
 // Build the POST body the site expects from the answers we picked.
 function buildSubmitPayload(chosen, questions, submitInfo) {
-  const payload = {};
-
-  // Group answers by question name so radios/checkboxes get their own field.
-  const byName = new Map();
-  for (let i = 0; i < chosen.length; i++) {
-    const q = questions[i];
-    const c = chosen[i];
-    if (q.name) {
-      const existing = byName.get(q.name) || [];
-      existing.push(c.chosenIndex);
-      byName.set(q.name, existing);
-    } else {
-      payload[`question_${q.id}`] = c.chosenText ?? '';
+  const payload = Object.assign(Object.create(null), submitInfo.fields);
+  const append = (name, value) => {
+    payload[name] = name in payload ? [].concat(payload[name], value) : value;
+  };
+  for (const [i, q] of questions.entries()) {
+    const answer = chosen[i];
+    const name = q.name || 'question_' + q.id;
+    if (q.type === 'short_answer') {
+      const values = answer.fillAnswers?.length ? answer.fillAnswers : [answer.chosenText];
+      if (!q.fieldNames?.length || values.length !== q.fieldNames.length || values.some(value => !value)) {
+        throw new Error('Thiếu giá trị cho ô nhập ở câu ' + (i + 1) + '.');
+      }
+      for (const [index, field] of q.fieldNames.entries()) {
+        const value = values[index];
+        append(field, value);
+      }
+      continue;
     }
+    if (!q.optionValues?.length) {
+      if (q.options.length || !answer.chosenText) throw new Error('Form không có giá trị hợp lệ cho câu ' + (i + 1) + '.');
+      append(name, answer.chosenText);
+      continue;
+    }
+    const selected = answer.chosenIndices || [answer.chosenIndex];
+    if (!selected.length || selected.some((index) => q.optionValues[index] === undefined)) {
+      throw new Error('Đáp án ngoài phạm vi ở câu ' + (i + 1) + '.');
+    }
+    const values = selected.map((index) => q.optionValues[index]);
+    append(name, q.type === 'multi_choice' ? values : values[0]);
   }
-  for (const [name, indices] of byName) {
-    payload[name] = indices.length === 1 ? String(indices[0]) : indices.map(String);
-  }
-
-  payload['__questionCount'] = String(chosen.length);
   return payload;
 }
 
@@ -375,10 +474,12 @@ function getRun(runId) {
   return runs.get(runId) || null;
 }
 
-function listRuns() {
+function listRuns(sessionId) {
   return [...runs.values()]
+    .filter((run) => run.sessionId === sessionId)
     .map((r) => ({
       id: r.id,
+      status: r.status,
       phase: r.phase,
       progress: { ...r.progress },
       startedAt: r.startedAt,
@@ -391,9 +492,10 @@ function listRuns() {
 
 function stopRun(runId) {
   const run = runs.get(runId);
-  if (!run || run.status === 'done' || run.status === 'stopped') return false;
+  if (!run || run.status !== 'running') return false;
   run.status = 'stopped';
   run.phase = 'stopped';
+  cancelSchedule(runId);
   if (run.abortController) {
     try { run.abortController.abort(); } catch {}
   }
@@ -409,10 +511,26 @@ function stopRun(runId) {
 function stopRunsForSession(sessionId) {
   if (!sessionId) return;
   for (const [id, r] of runs) {
-    if (r.sessionId === sessionId && (r.status === 'running' || r.phase === 'solving')) {
+    if (r.sessionId === sessionId && r.status === 'running') {
       stopRun(id);
     }
   }
+}
+
+function sweepRuns() {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  const finished = [...runs.values()].filter((run) => run.finishedAt).sort((a, b) => a.finishedAt - b.finishedAt);
+  for (const [i, run] of finished.entries()) {
+    if (run.finishedAt < cutoff || i < finished.length - 100) runs.delete(run.id);
+  }
+}
+
+function hasActiveRun(sessionId) {
+  return [...runs.values()].some((run) => !run.finishedAt && run.sessionId === sessionId);
+}
+
+function countActiveRuns() {
+  return [...runs.values()].filter((run) => !run.finishedAt).length;
 }
 
 module.exports = {
@@ -421,7 +539,11 @@ module.exports = {
   stopRunsForSession,
   getRun,
   listRuns,
+  hasActiveRun,
+  countActiveRuns,
+  sweepRuns,
   subscribe,
+  emit,
   log,
   scheduleAt,
   cancelSchedule,

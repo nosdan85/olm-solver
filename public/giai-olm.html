@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="OLM Solver">
+<meta name="theme-color" content="#f3f7ff">
+<meta name="color-scheme" content="light">
+<title>Giải bài OLM · giaiolm.com</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="stylesheet" href="/css/brand.css?v=1">
+<link rel="stylesheet" href="/css/app.css?v=20261110_v22">
+<link rel="stylesheet" href="/css/motion.css?v=1">
+<script>
+  // Force update service worker to guarantee fresh script versions
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(function(regs) {
+      for (var i = 0; i < regs.length; i++) {
+        regs[i].update();
+      }
+    }).catch(function(e) {});
+  }
+</script>
+</head>
+<body>
+<a class="skip-to-workspace" href="#workspace">Đến nội dung</a>
+
+<div id="app">
+
+  <!-- ------------------------------------------------------- top bar -->
+  <header class="topbar">
+    <a class="brand-home" href="/" aria-label="Về trang chủ Giải OLM"><svg class="brand-logo" viewBox="88 424 1096 404" aria-hidden="true"><image href="/icons/giaiolm-logo-v1.png" width="1254" height="1254"/></svg></a>
+    <div class="topbar-title">
+      <span class="dot" id="conn-dot" title="Trạng thái"></span>
+      <span id="conn-label">Chưa đăng nhập</span>
+      <div id="topbar-license-badge" role="button" tabindex="0" title="Xem & quản lý Key bản quyền" style="display:none; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:6px; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.3); color:#60a5fa; font-weight:600; margin-left:8px;">
+        <span>🔑 <span id="lbl-header-key">OLM-...</span></span>
+        <span style="opacity:0.4;">|</span>
+        <span id="lbl-header-remaining">Còn ...</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button type="button" class="topbar-action" id="btn-open-ios-helper" title="Tải & hướng dẫn cài tiện ích iOS (olm_helper.user.js)" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;color:inherit;border:1px solid rgba(100,116,139,0.28);background:transparent;cursor:pointer;">
+        <span>📲 Tiện ích iOS</span>
+      </button>
+      <button class="topbar-action" id="btn-header-logout" style="display:none;" title="Đăng xuất tài khoản OLM">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ---------------------------------------------------------- tabbar -->
+  <nav class="tabbar" id="tabbar" aria-label="Không gian giải bài">
+    <button data-tab="login" class="tab active" id="tab-nav-login">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
+      <span>Đăng nhập</span>
+    </button>
+    <button data-tab="homework" class="tab" id="tab-nav-homework" hidden>
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      <span>Bài tập</span>
+    </button>
+    <button data-tab="log" class="tab" id="tab-nav-log" hidden>
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
+      <span>Nhật ký</span>
+    </button>
+    <button class="tab" id="tab-nav-logout" style="display: none;">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span>Đăng xuất</span>
+    </button>
+  </nav>
+
+  <!-- ------------------------------------------------------ login view -->
+  <section class="view" id="view-login" aria-labelledby="workspace">
+    <div class="login-card">
+      <div class="login-logo">OLM</div>
+      <h1 id="workspace" tabindex="-1">Đăng nhập OLM</h1>
+      <p class="muted">Dùng tài khoản học sinh của bạn để mở danh sách bài tập.</p>
+
+      <form id="login-form-account" action="/api/login" method="post">
+        <label class="field">
+          <span>Tài khoản OLM</span>
+          <input id="in-username" name="username" type="text" autocomplete="username" placeholder="Tên đăng nhập" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        </label>
+        <label class="field">
+          <span>Mật khẩu</span>
+          <div class="password-field-wrap">
+            <input id="in-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required>
+            <button type="button" class="password-toggle-btn" id="btn-toggle-password" aria-label="Hiện mật khẩu" title="Hiện/ẩn mật khẩu">👁️</button>
+          </div>
+        </label>
+        <div id="login-error" class="alert alert-error" role="alert" hidden></div>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-login">Đăng nhập</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------- homework view -->
+  <section class="view" id="view-homework" hidden aria-labelledby="heading-homework">
+    <div class="page-heading"><h1 id="heading-homework" tabindex="-1">Giải bài OLM</h1><p>Chọn bài cần giải hoặc dán link bài tập OLM.</p></div>
+    <div class="homework-columns">
+      <div class="homework-main">
+    <!-- Quick Statistics -->
+    <div class="stats-row">
+      <div class="stat-pill active" id="stat-todo-card">
+        <span class="stat-num" id="stat-todo">0</span>
+        <span class="stat-lbl">Chưa làm</span>
+      </div>
+      <div class="stat-pill" id="stat-retry-card">
+        <span class="stat-num" id="stat-retry">0</span>
+        <span class="stat-lbl">Luyện tập lại</span>
+      </div>
+      <div class="stat-pill" id="stat-done-card">
+        <span class="stat-num" id="stat-done">0</span>
+        <span class="stat-lbl">Đã xong</span>
+      </div>
+    </div>
+
+    <!-- Filter Pills (Scrollable horizontally) -->
+    <div class="filter-bar">
+      <div class="filter-scroll">
+        <button class="filter-chip active" id="btn-filter-todo">Chưa làm (<span id="cnt-todo">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-retry">🔄 Luyện tập lại (<span id="cnt-retry">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-all">Tất cả (<span id="cnt-all">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-done">Đã xong (<span id="cnt-done">0</span>)</button>
+        <button class="filter-chip" id="btn-filter-expired">Hết hạn (<span id="cnt-expired">0</span>)</button>
+      </div>
+    </div>
+
+    <!-- Search input for homeworks -->
+    <div class="hw-search-container" style="padding: 0 16px; margin: 8px 0 10px 0;">
+      <div style="position: relative; display: flex; align-items: center;">
+        <span style="position: absolute; left: 12px; color: var(--text-dim); font-size: 14px; pointer-events: none;">🔍</span>
+        <input type="text" id="in-search-hw" aria-label="Tìm bài tập" placeholder="Tìm kiếm tên bài tập, môn học, giáo viên..." style="width: 100%; border-radius: 10px; padding: 10px 38px 10px 34px; background: var(--bg-elev-2); border: 1px solid var(--border); color: var(--text); font-size: 16px; outline: none; transition: border-color 0.2s;">
+        <button type="button" id="btn-clear-search" class="search-clear-btn" aria-label="Xóa tìm kiếm" title="Xóa tìm kiếm" hidden>✕</button>
+      </div>
+    </div>
+
+    <!-- Sub-actions strip -->
+    <div class="hw-subtoolbar">
+      <div class="hw-subtoolbar-left">
+        <button class="btn-sub" id="btn-select-all">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          <span id="txt-select-all">Chọn tất cả</span>
+        </button>
+        <button class="btn-sub" id="btn-refresh">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Quét lại
+        </button>
+        <span class="auto-scan-status" id="auto-scan-indicator" style="font-size: 11px; color: var(--color-text-muted, #888); display: inline-flex; align-items: center; gap: 5px; margin-left: 4px;">
+          <span id="scan-live-dot" style="width: 6px; height: 6px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+          <span id="scan-last-time">Chưa quét</span>
+        </span>
+      </div>
+      <button class="btn-sub btn-sub-accent" id="btn-toggle-add-hw">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Dán link bài
+      </button>
+    </div>
+
+    <!-- Add Custom Homework Box (Collapsible) -->
+    <div id="box-custom-hw" class="add-hw-box" hidden>
+      <div class="add-hw-header">
+        <span>Thêm bài tập bằng link OLM:</span>
+        <button class="btn-close-box" id="btn-close-add-hw">✕</button>
+      </div>
+      <div class="add-hw-row">
+        <input id="in-custom-hw" type="url" aria-label="Link bài tập OLM" placeholder="https://olm.vn/chu-de/... hoặc bài tập..." autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button class="btn btn-primary btn-mini" id="btn-add-hw">+ Thêm</button>
+      </div>
+    </div>
+
+    <!-- Cảnh báo không đăng nhập trùng phiên -->
+    <p class="solver-hint"><strong>Lưu ý</strong> · Dùng một phiên OLM trong lúc tác vụ đang chạy để tránh gián đoạn.</p>
+
+    <!-- Homework Cards List -->
+    <div id="hw-list" class="card-list"></div>
+
+    <!-- Sticky Bottom Bar -->
+    <div class="sticky-action">
+      <div class="sticky-summary" id="sticky-summary">Chưa chọn bài nào</div>
+      <button class="btn btn-primary" id="btn-start" disabled>Cấu hình giải</button>
+    </div>
+      </div>
+      <aside class="recent-run" aria-labelledby="recent-title">
+        <h2 id="recent-title">Tác vụ gần nhất</h2>
+        <p id="recent-run-status" class="muted">Chưa có tác vụ nào.</p>
+        <progress id="recent-run-progress" max="1" value="0" aria-label="Tiến độ điền câu" hidden></progress>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------- log view -->
+  <section class="view" id="view-log" hidden aria-labelledby="heading-log">
+    <div class="page-heading"><h1 id="heading-log" tabindex="-1">Nhật ký tác vụ</h1><p>Theo dõi tiến trình và trạng thái nộp bài.</p></div>
+    <p class="solver-hint"><strong>Lưu ý</strong> · Dùng một phiên OLM trong lúc tác vụ đang chạy để tránh gián đoạn.</p>
+    <div class="log-header-card">
+      <div class="log-status-row">
+        <div class="log-status-left">
+          <span class="pill" id="run-status">Sẵn sàng</span>
+          <span id="run-progress-text" class="run-progress-lbl">Chưa có bài nào đang chạy</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn btn-mini btn-danger" id="btn-stop-run" style="display:none; background:#ef4444; color:#fff; border-color:#dc2626; font-weight:600;">⏹ Dừng giải bài</button>
+          <button class="btn btn-mini" id="btn-clear-log">Xoá log</button>
+        </div>
+      </div>
+      <div id="run-submit-at" class="muted small" style="margin-top: 4px;"></div>
+    </div>
+
+    <!-- Individual Homework Log Selector (Hiện log từng bài) -->
+    <div class="hw-log-section">
+      <div class="hw-log-header">
+        <span>Xem log từng bài:</span>
+      </div>
+      <div class="hw-log-chips" id="hw-log-chips">
+        <button class="hw-log-chip active" data-hw-id="all">
+          <span>📋 Tất cả bài</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Log Console Window -->
+    <div id="log-list" class="log-list"></div>
+  </section>
+</div>
+
+<!-- -------------------------------------------------- Modal Cấu Hình Giải Bài Trước Khi Bắt Đầu -->
+<dialog id="modal-solve-config" class="modal-overlay" aria-labelledby="modal-solve-config-title">
+  <div class="modal-card" style="max-width: 560px; width: 92%; max-height: 88vh; display: flex; flex-direction: column; padding: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
+      <h2 id="modal-solve-config-title" style="font-size: 17px; font-weight: 800; margin: 0; color: var(--text);">⚙️ Cấu Hình Giải Bài Tập (<span id="cfg-modal-count" style="color: var(--accent);">1</span> bài)</h2>
+      <button type="button" class="btn-close-box" id="btn-close-solve-config" style="background:none; border:none; color:#9ca3af; font-size:18px; cursor:pointer;">✕</button>
+    </div>
+
+    <div style="margin-bottom: 12px; padding: 9px 12px; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; font-size: 12px; color: #92292f; line-height: 1.4;">
+      ⚠️ <strong style="color: #92292f;">Cảnh báo:</strong> Không được đăng nhập hoặc vào tài khoản OLM trên thiết bị/trình duyệt khác trong khi đang giải bài!
+    </div>
+
+    <!-- Áp dụng chung cho tất cả bài (khi chọn >= 2 bài) -->
+    <div id="cfg-batch-bar" style="display: none; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
+      <div style="font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 8px;">⚡ Áp dụng nhanh cho TẤT CẢ các bài đã chọn:</div>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 12px; color: var(--text-dim);">Điểm:</span>
+          <input type="number" id="cfg-batch-score" min="1" max="10" step="0.5" value="10" style="width: 70px; padding: 6px 8px; font-size: 16px; font-weight: 700; border-radius: 6px; background: var(--bg-elev); border: 1px solid var(--border); color: var(--text); text-align: center;">
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 12px; color: var(--text-dim);">Hoãn nộp (phút):</span>
+          <input type="number" id="cfg-batch-delay" min="0" max="60" value="0" style="width: 65px; padding: 6px 8px; font-size: 16px; font-weight: 700; border-radius: 6px; background: var(--bg-elev); border: 1px solid var(--border); color: var(--text); text-align: center;">
+        </div>
+        <button type="button" class="btn btn-secondary btn-mini" id="btn-apply-batch-cfg" style="padding: 7px 12px; font-size: 12px; font-weight: 600;">Áp dụng tất cả</button>
+      </div>
+    </div>
+
+    <!-- Danh sách config từng bài -->
+    <div id="cfg-items-list" style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; margin-bottom: 14px; max-height: 52vh;">
+      <!-- Dynamic list of items generated by JS -->
+    </div>
+
+    <div style="display: flex; gap: 10px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 14px;">
+      <button type="button" class="btn btn-ghost" id="btn-cancel-solve-config" style="flex: 1;">Hủy</button>
+      <button type="button" class="btn btn-primary" id="btn-confirm-solve-config" style="flex: 2; font-weight: 700; font-size: 15px;">🚀 Bắt Đầu Giải Bài</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- -------------------------------------------------- License Lock Modal (Bắt buộc) -->
+<dialog id="modal-license" class="modal-overlay" aria-labelledby="modal-license-title">
+  <div class="modal-card" style="max-width: 440px;">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:-8px;">
+      <button type="button" class="btn-close-box" id="btn-close-license-modal" aria-label="Đóng" style="display:none;font-size:18px;">✕</button>
+    </div>
+    <div id="lic-modal-icon" style="font-size: 38px; text-align: center; margin-bottom: 8px;">🔒</div>
+    <h2 id="modal-license-title" style="font-size: 20px; text-align: center; margin-bottom: 6px; font-weight: 800;">Kích Hoạt Bản Quyền</h2>
+    <p id="lic-modal-subtitle" class="muted" style="text-align: center; font-size: 13px; line-height: 1.5; margin-bottom: 16px;">
+      Mỗi mã bản quyền được liên kết trực tiếp với tài khoản OLM và máy tính duy nhất này. Nhập key là bắt buộc để sử dụng ứng dụng.
+    </p>
+
+    <!-- Info Box: OLM Account & Machine -->
+    <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 12px; line-height: 1.6;">
+      <div>👤 <b>Tài khoản OLM:</b> <span id="lic-modal-username" style="color: var(--accent); font-weight: 700;">Chưa đăng nhập</span></div>
+      <div>💻 <b>Thiết bị:</b> <span id="lic-modal-device" style="color: var(--text-dim); font-family: monospace;">Đang xác định...</span></div>
+      <div>🆔 <b>HWID:</b> <span id="lic-modal-hwid" style="color: var(--text-dim); font-family: monospace; word-break: break-all;">Đang xác định...</span></div>
+      <div id="lic-modal-expires-row" style="display:none;">⏳ <b>Hết hạn:</b> <span id="lic-modal-expires" style="font-weight: 700;">--</span></div>
+    </div>
+
+    <!-- Active Key View -->
+    <div id="lic-active-box" style="display:none; margin-bottom: 14px; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+      <div style="font-size: 11.5px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px;">Mã Key đang hoạt động</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+        <code id="lic-active-key-display" style="font-size: 14px; font-weight: 700; color: var(--text); word-break: break-all;">OLM-...</code>
+        <div style="display:flex; gap:6px;">
+          <button type="button" class="btn-sub" id="btn-toggle-key-mask" style="min-height:34px; padding:4px 10px;">👁 Hiện</button>
+          <button type="button" class="btn-sub btn-sub-accent" id="btn-copy-license-key" style="min-height:34px; padding:4px 10px;">📋 Copy Key</button>
+        </div>
+      </div>
+      <div style="margin-top: 10px; display:flex; justify-content:flex-end;">
+        <button type="button" class="btn-sub" id="btn-change-license-key" style="min-height:34px; font-size:12px;">🔄 Đổi key khác</button>
+      </div>
+    </div>
+
+    <div id="lic-input-group" style="margin-bottom: 14px;">
+      <label class="field">
+        <span>Mã License Key</span>
+        <input id="in-license-key" type="text" placeholder="OLM-30D-XXXX-YYYY" autocapitalize="characters" spellcheck="false" style="font-family: monospace; letter-spacing: 1px; font-weight: 700; text-align: center; font-size: 16px;">
+      </label>
+    </div>
+
+    <div id="license-alert" class="alert alert-error" style="display: none; margin-bottom: 14px;"></div>
+
+    <button class="btn btn-primary btn-block" id="btn-activate-license" style="height: 44px; font-size: 15px; font-weight: 700;">Kích Hoạt Key & Bắt Đầu</button>
+
+    <div id="lic-buy-box" style="display:none; margin-top: 12px; text-align: center;">
+      <a id="link-buy-license" class="btn btn-outline btn-block" href="/#bang-gia" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; justify-content:center; gap:6px; text-decoration:none; width:100%; height:42px; font-weight:700;">💳 Mua key / Gia hạn ↗</a>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; font-size: 12px;">
+      <button type="button" class="btn-link" id="btn-license-logout-acc" style="color: #ef4444; background: none; border: none; cursor: pointer;">← Đăng xuất OLM</button>
+      <a href="/#bang-gia" target="_blank" rel="noopener noreferrer" style="color: var(--accent); font-weight: 600; text-decoration: none;">Bảng giá key ↗</a>
+    </div>
+  </div>
+</dialog>
+
+<!-- -------------------------------------------------- Modal Tải & Hướng dẫn Tiện ích iOS -->
+<dialog id="modal-ios-helper" class="modal-overlay" aria-labelledby="modal-ios-title">
+  <div class="modal-card" style="max-width: 480px;">
+    <h2 id="modal-ios-title" style="font-size: 19px; margin-bottom: 6px; font-weight: 800;">📲 Tiện ích xem đáp án trên Safari iOS</h2>
+    <p class="muted" style="font-size: 13px; line-height: 1.5; margin-bottom: 12px;">
+      Dùng chung <b>1 Key</b> với Tool tự động giải. Key khóa cố định theo tài khoản OLM và thiết bị (HWID) để chống dùng ké.
+    </p>
+
+    <div style="display:flex;flex-direction:column;gap:10px;font-size:12.5px;line-height:1.5;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.22);border-radius:10px;padding:12px;margin-bottom:14px;">
+      <div><b>Bước 1 · Tải app Userscripts:</b> Lên App Store tải ứng dụng miễn phí <b>Userscripts</b> (biểu tượng <code>&lt;/&gt;</code>).</div>
+      <div><b>Bước 2 · Tải file tiện ích:</b> Bấm nút tải bên dưới → <em>Lưu vào Tệp</em> → mở app <b>Userscripts</b> chọn <em>Set Userscripts Directory</em> tới thư mục chứa file <code>olm_helper.user.js</code>.</div>
+      <div><b>Bước 3 · Bật trong Safari:</b> Vào <b>Cài đặt → Safari → Phần mở rộng → Userscripts</b> (Bật). Sau đó mở <code>olm.vn</code> bằng Safari → bấm chữ <b>aA / mảnh ghép</b> góc trái thanh địa chỉ → chọn <b>Userscripts → Luôn cho phép trên trang web này</b>.</div>
+      <div><b>Bước 4 · Nhập Key:</b> Trên trang bài tập OLM, bấm nút <b>💡</b> nổi → nhập mã Key (<code>OLM-...</code>) → bấm <b>Kích hoạt &amp; Lưu máy</b> để xem toàn bộ đáp án.</div>
+    </div>
+
+    <div style="display:flex;gap:10px;">
+      <button type="button" class="btn btn-ghost" id="btn-close-ios-helper" style="flex:1;">Đóng</button>
+      <a class="btn btn-primary" href="/api/helper/download" style="flex:2;text-align:center;text-decoration:none;font-weight:700;display:inline-flex;align-items:center;justify-content:center;">📥 Tải olm_helper.user.js</a>
+    </div>
+  </div>
+</dialog>
+
+<!-- Backwards compatibility fallback anchors for stale scripts -->
+<span id="hw-count" style="display:none;"></span>
+<button id="btn-stop" style="display:none;"></button>
+
+<script src="/js/deployment.js?v=1"></script>
+<script src="/js/api.js?v=20261110_v22"></script>
+<script src="js/ui.js?v=20261110_v22"></script>
+<script src="/js/app.js?v=20261110_v23"></script>
+</body>
+</html>

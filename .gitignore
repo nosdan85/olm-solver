@@ -1,9 +1,10 @@
 node_modules/
 .env
 *.log
-data/sessions.json
+/data/*.json
+/data/*.tmp
 .browser-profile/
 screenshots/
 cloudflared.exe
-data/tunnel.json
 scratch/
+/dist/

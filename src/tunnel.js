@@ -8,17 +8,9 @@ let tunnelProcess = null;
 let currentPublicUrl = '';
 
 const BIN_PATH = path.join(__dirname, '..', 'cloudflared.exe');
-const DATA_FILE = path.join(__dirname, '..', 'data', 'tunnel.json');
 
 function getUrl() {
-  if (currentPublicUrl) return currentPublicUrl;
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      return data.url || '';
-    }
-  } catch {}
-  return '';
+  return tunnelProcess ? currentPublicUrl : '';
 }
 
 function start(port = 3000) {
@@ -37,17 +29,15 @@ function start(port = 3000) {
 
       const urlRegex = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
       let resolved = false;
+      let output = '';
 
       const handleData = (chunk) => {
-        const text = chunk.toString();
-        const match = text.match(urlRegex);
+        output = (output + chunk.toString()).slice(-2048);
+        const match = output.match(urlRegex);
         if (match && !resolved) {
           resolved = true;
           currentPublicUrl = match[0];
-          try {
-            fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-            fs.writeFileSync(DATA_FILE, JSON.stringify({ url: currentPublicUrl, updatedAt: Date.now() }, null, 2));
-          } catch {}
+
 
           console.log('\n  ╔══════════════════════════════════════════════════════════════════════════════╗');
           console.log(`  ║  ĐƯỜNG DẪN DÙNG TRÊN ĐIỆN THOẠI (BẤT KỲ MẠNG 4G / 5G / WIFI KHÁC):           ║`);
@@ -63,17 +53,19 @@ function start(port = 3000) {
       tunnelProcess.on('error', (err) => {
         console.warn('[tunnel] Lỗi khởi động tunnel:', err.message);
         if (!resolved) { resolved = true; resolve(''); }
+        tunnelProcess = null;
       });
 
       tunnelProcess.on('exit', () => {
         tunnelProcess = null;
         currentPublicUrl = '';
+        if (!resolved) { resolved = true; resolve(''); }
       });
 
       // Timeout fallback after 15s
       setTimeout(() => {
-        if (!resolved) { resolved = true; resolve(currentPublicUrl); }
-      }, 15000);
+        if (!resolved) { resolved = true; stop(); resolve(''); }
+      }, 15000).unref();
     } catch (err) {
       console.warn('[tunnel] Exception:', err.message);
       resolve('');
@@ -87,11 +79,10 @@ function stop() {
       tunnelProcess.kill('SIGTERM');
     } catch {}
     tunnelProcess = null;
+    currentPublicUrl = '';
   }
 }
 
 process.on('exit', stop);
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
 
 module.exports = { start, getUrl, stop };

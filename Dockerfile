@@ -1,26 +1,21 @@
-FROM node:20-slim
+FROM node:24-bookworm-slim
 
-# Install Google Chrome stable & dependencies for Puppeteer
 RUN apt-get update \
-    && apt-get install -y wget gnupg ca-certificates \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable fonts-freefont-ttf libxss1 --no-install-recommends \
+    && apt-get install -y --no-install-recommends ca-certificates chromium fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     NODE_ENV=production \
     PORT=3000
 
 WORKDIR /app
-
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
-COPY . .
+COPY --chown=node:node . .
+RUN install -d -o node -g node /app/data
+USER node
 
 EXPOSE 3000
-
 CMD ["node", "server.js"]

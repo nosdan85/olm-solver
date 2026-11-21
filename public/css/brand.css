@@ -1,0 +1,23 @@
+.brand-logo {
+  display: block;
+  width: 8rem;
+  height: auto;
+  aspect-ratio: 1096 / 404;
+}
+
+.brand-home {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: .2rem .5rem;
+  margin: .55rem 1rem;
+  border-radius: .45rem;
+  background: #fff;
+}
+
+.brand-home .brand-logo { width: 6rem; }
+
+.brand-home:focus-visible {
+  outline: 3px solid #78baff;
+  outline-offset: 3px;
+}

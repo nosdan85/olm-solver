@@ -1,5 +1,8 @@
 'use strict';
 
+const { AsyncLocalStorage } = require('node:async_hooks');
+const { setTimeout: sleepUntil } = require('node:timers/promises');
+
 // Human-like pacing. Every wait is randomised inside a band so the request
 // pattern never has the flat, metronomic rhythm of a script.
 
@@ -14,17 +17,18 @@ const SPEEDS = {
   fast: { scale: 0.55, label: 'Nhanh' },
 };
 
-function setSpeed(scale) {
-  currentScale = scale;
+const speedContext = new AsyncLocalStorage();
+
+function withSpeed(scale, callback) {
+  return speedContext.run(scale, callback);
 }
-let currentScale = 1.0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function scaledSleep(ms) {
-  await sleep(Math.round(ms * currentScale));
+  await sleep(Math.round(ms * (speedContext.getStore() ?? 1)));
 }
 
 // Delay between individual actions: choosing an option, moving to next question.
@@ -110,7 +114,7 @@ function resolveSubmitWindow(windowSpec, now = new Date()) {
   const today = new Date(now);
   const parse = (hhmm) => {
     const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
-    if (!m) return null;
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
     const d = new Date(today);
     d.setHours(Number(m[1]), Number(m[2]), 0, 0);
     return d;
@@ -119,9 +123,17 @@ function resolveSubmitWindow(windowSpec, now = new Date()) {
   if (windowSpec && windowSpec.start && windowSpec.end) {
     const start = parse(windowSpec.start);
     const end = parse(windowSpec.end);
-    if (start && end && end > start) {
-      const span = end.getTime() - start.getTime();
-      return { start, end, submitAt: new Date(start.getTime() + rand(0, span)) };
+    if (start && end && end.getTime() !== start.getTime()) {
+      if (end < start) {
+        if (now < end) start.setDate(start.getDate() - 1);
+        else end.setDate(end.getDate() + 1);
+      }
+      if (end <= now) {
+        start.setDate(start.getDate() + 1);
+        end.setDate(end.getDate() + 1);
+      }
+      const earliest = Math.max(start.getTime(), now.getTime());
+      return { start, end, submitAt: new Date(rand(earliest, end.getTime())) };
     }
   }
 
@@ -132,24 +144,26 @@ function resolveSubmitWindow(windowSpec, now = new Date()) {
 }
 
 // Decide how many questions to answer wrong for the target score band.
-// max  -> 0 wrong
-// high -> ~20% wrong
-// mid  -> ~35% wrong
-// low  -> ~55% wrong
-// random -> anywhere in 0..60%
+// high / cao / 10 / max -> 0 wrong (100% chính xác, điểm 9.0 - 10.0đ)
+// mid / kha / 9         -> ~10% wrong (90% chính xác, điểm 8.0 - 9.0đ)
+// low / trungbinh / 8   -> ~20% wrong (80% chính xác, điểm 7.0 - 8.0đ)
+// 7                     -> ~30% wrong (70% chính xác, điểm 7.0đ)
+// 5                     -> ~50% wrong (50% chính xác, điểm 5.0đ)
+// random                -> anywhere in 0..40% wrong
 function formatScoreTarget(scoreTarget) {
-  const t = String(scoreTarget || 'high').trim().toLowerCase();
-  if (t === 'high' || t === 'cao' || t === '10' || t === 'max') return 'Cao (~9.0 - 10.0đ | 100% chính xác)';
-  if (t === 'mid' || t === 'kha' || t === 'medium' || t === '9') return 'Khá (~8.0 - 9.0đ | 90% chính xác)';
-  if (t === 'low' || t === 'trungbinh' || t === '8') return 'Trung bình (~7.0 - 8.0đ | 80% chính xác)';
-  return `${scoreTarget}đ`;
+  const t = String(scoreTarget || 'high').trim().toLowerCase().replace(',', '.');
+  if (t === 'high' || t === 'cao' || t === '10' || t === 'max') return '10 Điểm (Tối đa)';
+  if (t === 'mid' || t === 'kha' || t === 'medium' || t === '9') return '9.0 Điểm';
+  if (t === 'low' || t === 'trungbinh' || t === '8') return '8.0 Điểm';
+  if (/^\d+(\.\d+)?$/.test(t)) return `${Number(t)} Điểm`;
+  return `${scoreTarget} Điểm`;
 }
 
 // high / cao  -> 100% đúng (0 wrong)
 // mid / kha   -> 90% đúng (~10% wrong)
 // low / trungbinh -> 80% đúng (~20% wrong)
 function wrongRatioForScore(scoreTarget) {
-  const targetStr = String(scoreTarget || 'high').trim().toLowerCase();
+  const targetStr = String(scoreTarget || 'high').trim().toLowerCase().replace(',', '.');
   switch (targetStr) {
     case '10':
     case 'max':
@@ -186,7 +200,7 @@ function planWrongAnswers(questions, scoreTarget) {
   const total = questions.length;
   if (!total) return { wrongIndices: new Set(), plannedWrongs: new Map(), ratio: 0 };
 
-  const targetStr = String(scoreTarget || 'high').trim().toLowerCase();
+  const targetStr = String(scoreTarget || 'high').trim().toLowerCase().replace(',', '.');
   let target = 10;
   if (targetStr === 'max' || targetStr === '10' || targetStr === 'high' || targetStr === 'cao') target = 10;
   else if (targetStr === 'mid' || targetStr === 'medium' || targetStr === 'kha' || targetStr === '9') target = 9;
@@ -271,16 +285,16 @@ function planWrongAnswers(questions, scoreTarget) {
 class RateGuard {
   constructor({ minGapMs = 3000 } = {}) {
     this.minGapMs = minGapMs;
-    this.lastSubmission = 0;
+    this.nextSubmission = 0;
   }
 
-  async waitForSlot(now = Date.now()) {
-    const elapsed = now - this.lastSubmission;
-    if (elapsed < this.minGapMs) {
-      const wait = this.minGapMs - elapsed;
-      await sleep(wait);
-    }
-    this.lastSubmission = Date.now();
+  async waitForSlot({ signal } = {}) {
+    signal?.throwIfAborted();
+    const now = Date.now();
+    const slot = Math.max(now, this.nextSubmission);
+    this.nextSubmission = slot + this.minGapMs;
+    if (slot > now) await sleepUntil(slot - now, undefined, { signal });
+    signal?.throwIfAborted();
   }
 }
 
@@ -304,6 +318,6 @@ module.exports = {
   formatScoreTarget,
   RateGuard,
   SPEEDS,
-  setSpeed,
-  getSpeed: () => currentScale,
+  withSpeed,
+  getSpeed: () => speedContext.getStore() ?? 1,
 };

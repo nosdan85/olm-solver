@@ -7,18 +7,13 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
+    "build": "node scripts/build-vercel.js",
     "dev": "node --watch server.js",
     "quota": "node scripts/check-quota.js",
     "test": "node --test",
-    "install:browser": "node scripts/install-browser.js",
-    "cap:sync": "cap sync ios",
-    "cap:open": "cap open ios"
+    "install:browser": "node scripts/install-browser.js"
   },
   "dependencies": {
-    "@capacitor/cli": "^8.6.0",
-    "@capacitor/core": "^8.6.0",
-    "@capacitor/ios": "^8.6.0",
-    "@capacitor/local-notifications": "^8.3.1",
     "axios": "^1.7.7",
     "axios-cookiejar-support": "^5.0.5",
     "cheerio": "^1.0.0",
@@ -26,13 +21,16 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "express-rate-limit": "^7.4.1",
+    "http-cookie-agent": "^6.0.8",
     "https-proxy-agent": "^7.0.6",
+    "pg": "^8.23.1",
     "socks-proxy-agent": "^8.0.5",
     "tough-cookie": "^4.1.4"
   },
   "optionalDependencies": {
-    "puppeteer": "^23.6.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer": "^25.16.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

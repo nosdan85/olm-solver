@@ -34,7 +34,7 @@ olm/
 Yêu cầu Node.js 18+.
 
 ```bash
-npm install
+npm ci
 ```
 
 Copy `.env.example` thành `.env`, rồi điền:
@@ -76,58 +76,54 @@ Khởi động:
 npm start
 ```
 
-Mở `http://localhost:3000`. Để thêm vào màn hình chính iPhone, backend phải được expose qua HTTPS (ví dụ reverse proxy Nginx/Caddy hoặc tunnel có HTTPS), sau đó mở URL bằng Safari và chọn Share -> Add to Home Screen.
-
-## Ứng dụng iOS (Capacitor Native App)
-
-Dự án đã tích hợp Capacitor để đóng gói thành ứng dụng iOS native:
-
-- **Thư mục dự án Xcode**: `ios/App/App.xcodeproj`
-- **Mã định danh App**: `com.olmassistant.app`
-
-### Các bước phát triển & đồng bộ:
-1. Đồng bộ web vào iOS:
-   ```bash
-   npm run cap:sync
-   ```
-2. Mở dự án trong Xcode (trên macOS):
-   ```bash
-   npx cap open ios
-   ```
-3. Cấu hình Backend trên iOS App:
-   Vào tab **Cấu hình** trong ứng dụng -> nhập địa chỉ IP máy tính/VPS chạy server Node.js (ví dụ `http://192.168.1.15:3000`) và bấm **Kiểm tra kết nối**.
-
-### Build IPA tự động trên GitHub Actions (không cần Mac):
-Dự án đã có sẵn workflow [`.github/workflows/build-ios.yml`](.github/workflows/build-ios.yml). Khi push code lên GitHub, GitHub Actions sẽ tự động build và xuất file `OLM-Solver.ipa` để tải về và cài đặt qua Sideloadly / AltStore / Scarlet.
-
+Trên máy chạy server, mở [trang bán key](http://127.0.0.1:3000/), [trang Giải OLM](http://127.0.0.1:3000/giai-olm) hoặc [trang quản lý key](http://127.0.0.1:3000/quan-ly-key). Để thêm vào màn hình chính iPhone, backend cần có địa chỉ HTTPS. Mở địa chỉ đó bằng Safari và chọn Share → Add to Home Screen.
 
 ## Browser engine
 
-HTTP engine là mặc định nếu Puppeteer không có. Để bật browser engine:
+Cần Node.js 22.12 trở lên. Nếu máy đã có Chrome, server có thể dùng Chrome đã cài hoặc đường dẫn trong `PUPPETEER_EXECUTABLE_PATH`. Để tải trình duyệt dành cho Puppeteer, chạy `npm run install:browser`.
 
-```bash
-npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
-npx puppeteer browsers install chrome
-```
+Ứng dụng dùng máy chủ đang phục vụ trang theo mặc định. Để bật Cloudflare Tunnel trên Windows, chạy `CHAY_OLM.bat` với `cloudflared.exe` trong thư mục dự án, hoặc đặt `AUTO_TUNNEL=true`. Mở đường dẫn HTTPS được in ra trên điện thoại.
 
-Sau đó chọn `Auto` hoặc `Browser` trong PWA. Nếu dùng máy chủ không có desktop, giữ `PUPPETEER_HEADLESS=true`. Nếu có desktop và cần quan sát trình duyệt, đặt `PUPPETEER_HEADLESS=false`.
+Đặt `ADMIN_PASSWORD` riêng trước khi mở trang quản trị. Đặt `SESSION_SECRET` ngẫu nhiên để lưu phiên OLM đã mã hóa qua lần khởi động lại. Nếu bỏ trống, phiên chỉ lưu trong bộ nhớ. Có thể đặt `OLM_DATA_DIR` đến ổ đĩa bền vững khi triển khai. Dữ liệu license, phiên và proxy là dữ liệu cục bộ.
 
 ## API
 
-- `POST /api/login`: `{ username, password }` -> `{ sessionId }`
-- `GET /api/homeworks`: header `X-Session-Id`
-- `POST /api/run`: chọn bài + config điểm/tốc độ/khung giờ
-- `GET /api/run/:runId`: trạng thái và log gần nhất
-- `GET /api/events`: SSE log real-time
-- `POST /api/answer`: giải một câu hỏi; API key chỉ ở server
-- `POST /api/submit`: submit thủ công
-- `POST /api/logout`: xoá session token
+- POST /api/login xác thực tài khoản và mật khẩu OLM rồi tạo cookie phiên web HttpOnly. Cookie phiên OLM được giữ trên máy chủ.
+- Trình duyệt gửi cookie phiên cho API người dùng. API đọc bài, chạy, giải hoặc nộp thêm X-License-Key và X-Device-HWID đã kích hoạt.
+- GET /api/run/:runId và GET /api/runs chỉ trả tác vụ thuộc phiên hiện tại.
+- GET /api/events và GET /api/admin/events dùng các cookie phiên riêng cho sự kiện tác vụ và quản trị.
+- POST /api/admin/login tạo cookie phiên quản trị HttpOnly có thời hạn. Trình duyệt cần đăng nhập lại khi cập nhật từ bản cũ dùng token trong bộ nhớ web.
 
 ## Ghi chú triển khai
 
 1. Parser OLM sử dụng nhiều selector fallback. Khi OLM thay đổi HTML, xem warning trong log và cập nhật `src/question-parser.js` hoặc `src/olm-client.js`.
-2. Cookie jar được lưu server-side trong `data/sessions.json`; password không được lưu.
+2. Cookie jar được mã hóa trong `data/sessions.json` khi có `SESSION_SECRET`.
 3. Không đưa `OPENAI_API_KEY` vào frontend hoặc localStorage.
 4. Service worker chỉ cache app shell. `/api/*` luôn yêu cầu mạng.
 5. Không dùng service worker để tiếp tục chạy timer khi iOS đã terminate PWA. Lịch submit được giữ trong backend run; nếu cần độ bền khi restart server, dùng process manager và persistent job queue.
 6. Chỉ dùng trên tài khoản và lớp học mà bạn có quyền quản lý; kiểm tra quy định của trường và OLM trước khi tự động hóa việc nộp bài.
+
+## Triển khai giaiolm.com
+
+| Đường dẫn | Vai trò | Hạ tầng |
+| --- | --- | --- |
+| / | Giới thiệu, bảng giá và đặt key qua Facebook | Vercel, tệp tĩnh |
+| /giai-olm | Đăng nhập OLM, kích hoạt key, chạy và theo dõi tác vụ | Vercel gọi Render API |
+| /quan-ly-key | Đăng nhập quản trị, tạo key, quản lý thiết bị và sao lưu | Vercel gọi Render API |
+| api.giaiolm.com | Phiên, license, API và hàng đợi | Render Web Service và PostgreSQL |
+| Worker | Chromium, HTTP engine và xử lý tác vụ | Render Background Worker |
+
+### Thứ tự kết nối
+
+1. Đồng bộ Blueprint trong render.yaml với repository. Blueprint tạo hai API instance trả phí, một worker và PostgreSQL cùng vùng. Điền ADMIN_PASSWORD và OPENAI_API_KEY trong Render. Nếu dùng nhà cung cấp AI khác, đặt OPENAI_BASE_URL và OPENAI_MODEL tương ứng. API và worker phải dùng cùng SESSION_SECRET và DATABASE_URL.
+2. Xác minh /api/ready trả 200 trên API Render. Thêm api.giaiolm.com trong Render và trỏ bản ghi DNS theo giá trị Render cung cấp. Đợi HTTPS hoạt động trước khi mở đăng nhập từ frontend.
+3. Nhập repository vào một dự án Vercel Pro dành cho website thương mại. Dùng cấu hình vercel.json trong thư mục gốc, rồi thêm giaiolm.com và cấu hình chuyển hướng www về domain chính. Bản build mặc định gọi https://api.giaiolm.com. Với staging, dùng frontend và API HTTPS cùng site (ví dụ preview.giaiolm.com và api-staging.giaiolm.com). Đặt PUBLIC_API_ORIGIN trên Vercel và thêm origin frontend chính xác vào PUBLIC_ORIGINS trên Render.
+4. Nếu có key cũ, xuất JSON từ trang quản trị cũ và dùng Nhập JSON trên trang quản trị mới. Người dùng đăng nhập lại để tạo phiên PostgreSQL. Tạo thử một key 3 tháng và chạy thử với tài khoản kiểm thử trước khi công khai.
+5. Với reverse proxy khác Render, đặt TRUST_PROXY phù hợp đường đi của request. Chỉ cấp quyền Postgres cho dịch vụ nội bộ. Worker dùng Chromium trong container riêng. PUPPETEER_NO_SANDBOX=true chỉ áp dụng cho worker trong Blueprint.
+
+### Kiểm chứng tải trước khi mở bán
+
+- Trang giới thiệu tĩnh có thể kiểm tải riêng với cache Vercel đang bật. Lượt xem bảng giá và bấm mua không gọi Render.
+- Đo riêng lượt đăng nhập, quét bài, theo dõi tác vụ và số tác vụ giải đồng thời. Dùng dữ liệu tổng hợp hoặc upstream staging, tăng tải theo bậc đến mục tiêu 10.000 phiên đang hoạt động. Theo dõi tỷ lệ 5xx, p95, CPU, RAM worker, số kết nối PostgreSQL và thời gian chờ trong hàng đợi.
+- WORKER_RUN_SLOTS nhân với số worker cho biết số run xử lý song song tối đa. WORKER_HOMEWORK_CONCURRENCY giới hạn số bài trong từng run. MAX_QUEUED_RUNS giới hạn tổng run chờ và đang chạy. API trả 503 kèm Retry-After khi đầy. Tăng số worker dựa trên kết quả đo và giới hạn OLM, nhà cung cấp AI.
+- Kiểm tra redeploy, dừng worker và khôi phục cơ sở dữ liệu trên staging. Job đang chờ được lưu trong PostgreSQL. Nếu mất worker sau khi bắt đầu, job được đánh dấu gián đoạn để người dùng kiểm tra OLM trước khi thử lại. Bật HA PostgreSQL trên gói đủ điều kiện nếu cần chuyển đổi dự phòng, và theo dõi uptime từ bên ngoài.

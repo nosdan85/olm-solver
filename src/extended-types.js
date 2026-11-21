@@ -18,12 +18,12 @@
 // ---------------------------------------------------------------------------
 
 // Thu thập mọi open shadow root bên trong một element.
-function collectShadowRoots(el, out = []) {
-  if (!el || !el.querySelectorAll) return out;
+function collectShadowRoots(el, out = [], depth = 0) {
+  if (!el || !el.querySelectorAll || depth > 12) return out;
   for (const node of el.querySelectorAll('*')) {
     if (node.shadowRoot) {
       out.push(node.shadowRoot);
-      collectShadowRoots(node.shadowRoot, out);
+      collectShadowRoots(node.shadowRoot, out, depth + 1);
     }
   }
   return out;
@@ -76,7 +76,12 @@ function isVisible(el) {
 // Lấy text thực của một element (bỏ khoảng trắng thừa).
 function elText(el) {
   if (!el) return '';
-  return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  return (el.innerText || el.textContent || '')
+    .replace(/[\uE000-\uF8FF]/g, '')
+    .replace(/\s*=/g, '≠')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -85,9 +90,12 @@ function elText(el) {
 
 // Chạy trong trang. Trả về descriptor dạng câu hỏi, hoặc null nếu không khớp
 // dạng nào trong nhóm mở rộng.
-function detectInPage() {
-  const defRoot = document.querySelector('default-root');
-  const root = defRoot?.shadowRoot || defRoot || document;
+function detectInPage(index) {
+  const item = document.querySelectorAll('.itemx.q-view-itemx.question')[index] ||
+    document.getElementById('user-test-' + index) || document.querySelectorAll('.quizx.question-hold')[index] ||
+    document.querySelectorAll('default-root')[index];
+  const scope = item || document.querySelector('default-root') || document;
+  const root = scope.shadowRoot || scope;
 
   const txt = (el) => elText(el);
 
@@ -141,12 +149,46 @@ function detectInPage() {
     };
   }
 
-  // --- 3. Ghép đôi / nối cột: hai cột + các chấm tròn nhỏ ---
+  // --- 2b. OLM modern type-drag-text (điền từ vào chỗ trống) ---
+  const dragTextComp = deepQuery(root, 'type-drag-text');
+  if (dragTextComp) {
+    return {
+      type: 'drag_text',
+      text: txt(dragTextComp) || 'Complete the sentences using the words and phrases given.',
+      compTag: 'type-drag-text',
+    };
+  }
+
+  // --- 2c. OLM modern type-fill-me (điền khuyết) ---
+  const fillMeComp = deepQuery(root, 'type-fill-me, type-fill-me-mobile');
+  if (fillMeComp) {
+    return {
+      type: 'fill_me',
+      text: txt(fillMeComp) || 'Complete the sentence using the correct form of the word.',
+      compTag: 'type-fill-me',
+    };
+  }
+
+  // --- 3. Ghép đôi / nối cột: hai cột + các chấm tròn nhỏ hoặc boxlink ---
+  const boxLefts = deepQueryAll(root, '.boxlink.left');
+  const boxRights = deepQueryAll(root, '.boxlink.right');
+  if (boxLefts.length > 0 && boxRights.length > 0) {
+    return {
+      type: 'matching',
+      subType: 'boxlink',
+      text: txt(deepQuery(root, '.question-content, #paragraph, type-link-list')) || 'Match the words with the definitions.',
+      left: boxLefts.map(txt).filter(Boolean),
+      right: boxRights.map(txt).filter(Boolean),
+      boxCount: boxLefts.length,
+    };
+  }
+
   const pairDots = deepQueryAll(root, '[class*=pair-dot], [class*=match-dot], [class*=connect-dot], [class*=line-dot], [data-pair], [data-match]').filter(isVisible);
   if (pairDots.length >= 2) {
     const left = deepQueryAll(root, '[class*=col-a], [class*=column-a], [class*=left-col], [data-col="A"]').filter(isVisible);
     const right = deepQueryAll(root, '[class*=col-b], [class*=column-b], [class*=right-col], [data-col="B"]').filter(isVisible);
     const leftItems = (left.length ? left : deepQueryAll(root, '[class*=match-item], [class*=pair-item]')).filter(isVisible);
+    const rightItems = (right.length ? right : []).filter(isVisible);
     return {
       type: 'matching',
       text: txt(deepQuery(root, '.question-content, #paragraph')) || txt(root).slice(0, 400),
@@ -202,6 +244,61 @@ function detectInPage() {
     };
   }
 
+  // --- 7. Sắp xếp từ / thứ tự (Rearrange / Word Order - q_type: 3, 9) ---
+  const orderComp = deepQuery(root, 'type-order, type-order-mobile, type-rearrange, .sortable-list, .word-pool, .source-words');
+  if (orderComp) {
+    const wordItems = deepQueryAll(root, '.word-item, .sortable-item, .qdrag, .source-words button, .word-pool button').filter(isVisible);
+    if (wordItems.length >= 2) {
+      return {
+        type: 'rearrange',
+        text: txt(deepQuery(root, '.question-content, #paragraph')) || txt(root).slice(0, 400),
+        words: wordItems.map(txt).filter(Boolean),
+      };
+    }
+  }
+
+  // --- 8. Luyện nói / Ghi âm (Speaking / Recording - q_type: 10, 15) ---
+  const speakComp = deepQuery(root, 'type-speaking, type-record, .speaking-prompt, .btn-record, [data-action="record"], .mic-icon');
+  if (speakComp) {
+    const prompt = txt(deepQuery(root, '.speaking-prompt, .target-sentence, .question-content, #paragraph'));
+    return {
+      type: 'speaking',
+      text: prompt,
+      prompt,
+    };
+  }
+
+  // --- 9. Ô chữ / Tìm từ (Crossword & Word Search - q_type: 16) ---
+  const cwGrid = deepQuery(root, 'table.crossword-grid, .cw-cell, .word-search-grid, .ws-cell');
+  if (cwGrid) {
+    const isCrossword = !!deepQuery(root, 'table.crossword-grid, .cw-cell');
+    return {
+      type: isCrossword ? 'crossword' : 'word_search',
+      text: txt(deepQuery(root, '.question-content, #paragraph')) || txt(root).slice(0, 400),
+      isCrossword,
+    };
+  }
+
+  // --- 10. Trình soạn thảo Code (Code Editor - q_type: 19) ---
+  const codeEditor = deepQuery(root, '.cm-editor, .cm-content, .ace_editor, .monaco-editor');
+  if (codeEditor) {
+    return {
+      type: 'code_editor',
+      text: txt(deepQuery(root, '.question-content, #paragraph')) || txt(root).slice(0, 400),
+    };
+  }
+
+  // --- 11. Trả lời ngắn số THPT (Strict Numerical Short Answer - q_type: 2, 14) ---
+  const shortNumInput = deepQuery(root, 'type-short-answer input, input.short-ans-input');
+  if (shortNumInput) {
+    return {
+      type: 'strict_short_answer',
+      text: txt(deepQuery(root, '.question-content, #paragraph')) || txt(root).slice(0, 400),
+      pattern: shortNumInput.getAttribute('pattern') || '',
+      placeholder: shortNumInput.getAttribute('placeholder') || '',
+    };
+  }
+
   return null;
 }
 
@@ -209,7 +306,11 @@ function detectInPage() {
 // ĐIỀN ĐÁP ÁN CHO CÁC DẠNG MỞ RỘNG
 // ---------------------------------------------------------------------------
 
-// Click phần tử + phát thêm sự kiện để các framework (Lit/React) nhận biết.
+function getQuestionIndex(question) {
+  return Number.isSafeInteger(question?.index) && question.index >= 0 ? question.index : 0;
+}
+
+// Click the selected element once.
 async function clickEl(page, handle) {
   try {
     await handle.click({ delay: 30 });
@@ -217,7 +318,6 @@ async function clickEl(page, handle) {
     try {
       await page.evaluate((el) => {
         el.click();
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true }));
       }, handle);
     } catch {}
   }
@@ -228,10 +328,16 @@ async function fillDropdown(page, question, answer) {
   const targetText = String(answer.answer ?? '').trim();
   const targetIdx = Number.isInteger(answer.correctIndex) && answer.correctIndex >= 0 ? answer.correctIndex : -1;
 
+  // Chuẩn hóa Unicode NFC chống lệch bảng mã tiếng Việt
+  const norm = (s) => String(s || '').trim().normalize('NFC').toLowerCase();
+
   // Ưu tiên <select> native: set value + fire change.
-  const native = await page.evaluate(({ text, idx }) => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  const native = await page.evaluate(({ text, idx, questionIndex }) => {
+    const normVi = (s) => String(s || '').trim().normalize('NFC').toLowerCase();
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[questionIndex] ||
+      document.getElementById('user-test-' + questionIndex) || document.querySelectorAll('.quizx.question-hold')[questionIndex];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try { all.push(...Array.from(r.querySelectorAll('select'))); } catch {}
@@ -247,14 +353,14 @@ async function fillDropdown(page, question, answer) {
 
     const opts = Array.from(sel.options);
     let target = -1;
-    if (idx >= 0 && idx < opts.length) target = idx;
-    if (target < 0) {
-      target = opts.findIndex((o) => (o.textContent || '').trim().toLowerCase() === text.toLowerCase());
-    }
+    if (text) target = opts.findIndex(o => normVi(o.textContent) === normVi(text));
+    const usable = opts.filter(o => !o.disabled && !['', '--', 'chọn'].includes(normVi(o.textContent)));
+    if (target < 0 && idx >= 0 && idx < usable.length) target = opts.indexOf(usable[idx]);
     if (target < 0 && text) {
       target = opts.findIndex((o) => {
-        const ot = (o.textContent || '').trim().toLowerCase();
-        return ot.includes(text.toLowerCase()) || text.toLowerCase().includes(ot);
+        const ot = normVi(o.textContent);
+        const nt = normVi(text);
+        return ot.includes(nt) || nt.includes(ot);
       });
     }
     if (target < 0) return { ok: false, reason: 'option-not-found' };
@@ -263,14 +369,16 @@ async function fillDropdown(page, question, answer) {
     sel.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     sel.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     return { ok: true, selectedIndex: target, value: sel.value };
-  }, { text: targetText, idx: targetIdx });
+  }, { text: targetText, idx: targetIdx, questionIndex: question.index || 0 });
 
   if (native.ok) return native;
 
   // Dropdown tuần dựng: click để mở, rồi click option.
-  const custom = await page.evaluate(({ text, idx }) => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  const custom = await page.evaluate(({ text, idx, questionIndex }) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[questionIndex] ||
+      document.getElementById('user-test-' + questionIndex) || document.querySelectorAll('.quizx.question-hold')[questionIndex];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
@@ -284,17 +392,19 @@ async function fillDropdown(page, question, answer) {
     const box = all.find((s) => s.offsetWidth > 0 || s.offsetHeight > 0);
     if (!box) return { ok: false, reason: 'no-dropdown' };
     box.click();
-    box.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
     return { ok: true, opened: true };
-  }, { text: targetText, idx: targetIdx });
+  }, { text: targetText, idx: targetIdx, questionIndex: question.index || 0 });
 
   if (!custom.ok) return custom;
 
   await new Promise((r) => setTimeout(r, 400));
 
-  const picked = await page.evaluate(({ text, idx }) => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  const picked = await page.evaluate(({ text, idx, questionIndex }) => {
+    const normVi = (s) => String(s || '').trim().normalize('NFC').toLowerCase();
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[questionIndex] ||
+      document.getElementById('user-test-' + questionIndex) || document.querySelectorAll('.quizx.question-hold')[questionIndex];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
@@ -314,21 +424,21 @@ async function fillDropdown(page, question, answer) {
     let target = -1;
     if (idx >= 0 && idx < opts.length) target = idx;
     if (target < 0) {
-      target = opts.findIndex((o) => (o.innerText || '').trim().toLowerCase() === text.toLowerCase());
+      target = opts.findIndex((o) => normVi(o.innerText) === normVi(text));
     }
     if (target < 0 && text) {
       target = opts.findIndex((o) => {
-        const ot = (o.innerText || '').trim().toLowerCase();
-        return ot.includes(text.toLowerCase()) || text.toLowerCase().includes(ot);
+        const ot = normVi(o.innerText);
+        const nt = normVi(text);
+        return ot.includes(nt) || nt.includes(ot);
       });
     }
     if (target < 0) return { ok: false, reason: 'option-not-found' };
 
     const opt = opts[target];
     opt.click();
-    opt.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
     return { ok: true, selectedIndex: target };
-  }, { text: targetText, idx: targetIdx });
+  }, { text: targetText, idx: targetIdx, questionIndex: question.index || 0 });
 
   return picked;
 }
@@ -338,10 +448,15 @@ async function fillDragDrop(page, question, answer) {
   const mapping = Array.isArray(answer.mapping) ? answer.mapping : [];
   if (!mapping.length) return { ok: false, reason: 'no-mapping' };
 
+  const qIndex = getQuestionIndex(question);
+
   // Lấy danh sách thẻ nguồn và các ô đích từ DOM (theo thứ tự hiển thị).
-  const boxes = await page.evaluate(() => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  const boxes = await page.evaluate((idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
@@ -356,21 +471,38 @@ async function fillDragDrop(page, question, answer) {
       const r = el.getBoundingClientRect();
       return r.width > 2 && r.height > 2;
     });
-    return visible.map((el) => {
+    return visible.map((el, index) => {
+      el.setAttribute('data-olm-audit-drag', String(index));
       const r = el.getBoundingClientRect();
       return {
+        id: String(index),
         text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
         x: r.left + r.width / 2,
         y: r.top + r.height / 2,
         isZone: el.matches('[data-dropzone], .dropzone, .drop-zone, .group-box, .category-box, .tw-drop-item, .qgroup'),
       };
     });
-  });
+  }, qIndex);
 
   if (!boxes.length) return { ok: false, reason: 'no-drag-elements' };
 
   const sources = boxes.filter((b) => !b.isZone);
   const zones = boxes.filter((b) => b.isZone);
+
+  const placement = (src, target) => page.evaluate(({ source, zone, text }) => {
+    let sourceNode, targetNode;
+    const collect = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.getAttribute('data-olm-audit-drag') === source) sourceNode = element;
+        if (element.getAttribute('data-olm-audit-drag') === zone) targetNode = element;
+        if (element.shadowRoot) collect(element.shadowRoot);
+      }
+    };
+    collect(document);
+    if (!targetNode) return false;
+    return Boolean(sourceNode && targetNode.contains(sourceNode)) ||
+      Boolean(text && Array.from(targetNode.children).some((node) => (node.innerText || '').trim() === text));
+  }, { source: src.id, zone: target.id, text: src.text });
 
   let placed = 0;
   for (const m of mapping) {
@@ -379,34 +511,41 @@ async function fillDragDrop(page, question, answer) {
     if (!Number.isInteger(itemIdx) || !Number.isInteger(targetIdx)) continue;
 
     const src = sources[itemIdx];
-    // targetIdx trong danh sách "targets" mà AI nhận -> map sang vị trí zone thực tế.
     const zone = zones[targetIdx] || boxes.find((b) => b.text === (question.targets || [])[targetIdx]);
     if (!src || !zone) continue;
+    if (await placement(src, zone)) { placed++; continue; }
 
-    // Kéo bằng chuột (hỗ trợ cả thư viện dùng pointer events)
+    // Kéo thả chuột nâng cao: delay 100ms, nhích 5px kích hoạt threshold, 20 steps di chuyển
     try {
       await page.mouse.move(src.x, src.y);
       await page.mouse.down();
-      // Di chuyển theo nhiều bước để thư viện kéo-thả nhận biết đường đi
-      const steps = 12;
+      await new Promise((r) => setTimeout(r, 100));
+      // Nhích nhẹ 5px để kích hoạt threshold của SortableJS / jQuery UI
+      await page.mouse.move(src.x + 5, src.y + 5);
+      const steps = 20;
       for (let i = 1; i <= steps; i++) {
         await page.mouse.move(
-          src.x + ((zone.x - src.x) * i) / steps,
-          src.y + ((zone.y - src.y) * i) / steps
+          src.x + 5 + ((zone.x - (src.x + 5)) * i) / steps,
+          src.y + 5 + ((zone.y - (src.y + 5)) * i) / steps
         );
       }
       await page.mouse.move(zone.x, zone.y);
+      await new Promise((r) => setTimeout(r, 100));
       await page.mouse.up();
-      await new Promise((r) => setTimeout(r, 250));
-      placed++;
-      continue;
-    } catch {}
+      await new Promise((r) => setTimeout(r, 200));
+      if (await placement(src, zone)) { placed++; continue; }
+    } catch {
+      await page.mouse.up().catch(() => {});
+    }
 
-    // Dự phòng: phát sự kiện HTML5 drag & drop với DataTransfer dùng chung
+    // Dự phòng HTML5 DragEvent với DataTransfer dùng chung
     try {
-      await page.evaluate(({ si, ti }) => {
-        const defRoot = document.querySelector('default-root');
-        const root = defRoot?.shadowRoot || defRoot || document;
+      await page.evaluate(({ si, ti, idx }) => {
+        const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+          document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+          document.querySelectorAll('default-root')[idx];
+        const scope = item || document.querySelector('default-root') || document;
+        const root = scope.shadowRoot || scope;
         const all = [];
         const walk = (r) => {
           try {
@@ -433,24 +572,67 @@ async function fillDragDrop(page, question, answer) {
         fire(tgt, 'dragover');
         fire(tgt, 'drop');
         fire(src, 'dragend');
-      }, { si: itemIdx, ti: targetIdx });
-      placed++;
+      }, { si: itemIdx, ti: targetIdx, idx: qIndex });
+      if (await placement(src, zone)) placed++;
     } catch {}
   }
 
-  if (!placed) return { ok: false, reason: 'drag-failed' };
+  if (placed !== mapping.length) return { ok: false, reason: 'drag-unconfirmed', placed };
   return { ok: true, placed };
 }
 
-// --- Ghép đôi ---
+// --- Ghép đôi / Nối cột (q_type: 5) ---
 async function fillMatching(page, question, answer) {
+  // 1. Hỗ trợ dạng nối cột hiện đại của OLM (<type-link-list> / .boxlink.left & .boxlink.right)
+  const boxlinkRes = await page.evaluate(async () => {
+    function getAllDeep(sel, root = document) {
+      let results = [];
+      try { results.push(...Array.from(root.querySelectorAll(sel))); } catch {}
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.shadowRoot) {
+          try { results.push(...getAllDeep(sel, n.shadowRoot)); } catch {}
+        }
+      }
+      return Array.from(new Set(results));
+    }
+    const boxLefts = getAllDeep('.boxlink.left');
+    const boxRights = getAllDeep('.boxlink.right');
+    if (boxLefts.length === 0 || boxRights.length === 0) return { matched: 0 };
+
+    const lines = () => getAllDeep('svg line, svg polyline, [data-connected="true"], .boxlink.connected').length;
+    let count = 0;
+    for (let i = 0; i < boxLefts.length; i++) {
+      const l = boxLefts[i];
+      const r = boxRights.find(x => x.id && x.id === l.id);
+      if (r) {
+        const previous = lines();
+        l.click();
+        await new Promise(res => setTimeout(res, 250));
+        r.click();
+        await new Promise(res => setTimeout(res, 250));
+        if (lines() > previous) count++;
+      }
+    }
+    return { matched: count, total: boxLefts.length };
+  });
+
+  if (boxlinkRes?.matched > 0 && boxlinkRes.matched === boxlinkRes.total) {
+    return { ok: true, paired: boxlinkRes.matched };
+  }
+
   const pairs = Array.isArray(answer.pairs) ? answer.pairs : [];
   if (!pairs.length) return { ok: false, reason: 'no-pairs' };
 
-  // Chấm nối: click chấm cột A rồi click chấm cột B tương ứng.
-  const dots = await page.evaluate(() => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  // Cơ chế Click-to-Connect: Click chấm ở cột A -> chờ 150ms -> Click chấm ở cột B
+  const qIndex = getQuestionIndex(question);
+  const dots = await page.evaluate((idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
@@ -467,7 +649,6 @@ async function fillMatching(page, question, answer) {
     });
     return visible.map((el) => {
       const r = el.getBoundingClientRect();
-      // Xác định cột A/B dựa trên vị trí x tương đối
       const half = window.innerWidth / 2;
       return {
         text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
@@ -476,12 +657,18 @@ async function fillMatching(page, question, answer) {
         side: r.left < half ? 'A' : 'B',
       };
     });
-  });
+  }, qIndex);
 
   if (dots.length < 2) return { ok: false, reason: 'no-pair-dots' };
 
   const sideA = dots.filter((d) => d.side === 'A');
   const sideB = dots.filter((d) => d.side === 'B');
+
+  const connections = () => page.evaluate(() => {
+    const count = (root) => root.querySelectorAll('svg line, svg polyline, [data-connected="true"]').length +
+      Array.from(root.querySelectorAll('*')).reduce((total, node) => total + (node.shadowRoot ? count(node.shadowRoot) : 0), 0);
+    return count(document);
+  });
 
   let paired = 0;
   for (const p of pairs) {
@@ -492,23 +679,124 @@ async function fillMatching(page, question, answer) {
     const b = sideB[ri] || dots[sideA.length + ri];
     if (!a || !b) continue;
     try {
+      const before = await connections();
       await page.mouse.click(a.x, a.y);
       await new Promise((r) => setTimeout(r, 150));
       await page.mouse.click(b.x, b.y);
       await new Promise((r) => setTimeout(r, 200));
-      paired++;
+      if (await connections() > before) paired++;
     } catch {}
   }
 
-  if (!paired) return { ok: false, reason: 'pair-failed' };
+  if (paired !== pairs.length) return { ok: false, reason: 'pair-unconfirmed', paired };
   return { ok: true, paired };
 }
 
-// --- Hotspot ---
+// --- Điền từ dạng Drag-Text (<type-drag-text>) ---
+async function fillDragText(page, question, answer) {
+  const qIndex = getQuestionIndex(question);
+  const res = await page.evaluate(async (targetAns, idx) => {
+    function getAllDeep(sel, root = document) {
+      let results = [];
+      try { results.push(...Array.from(root.querySelectorAll(sel))); } catch {}
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.shadowRoot) {
+          try { results.push(...getAllDeep(sel, n.shadowRoot)); } catch {}
+        }
+      }
+      return Array.from(new Set(results));
+    }
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const searchRoot = item ? (item.shadowRoot || item) : document;
+    const comps = getAllDeep('type-drag-text', searchRoot);
+    const comp = item ? comps[0] : (comps[idx] || comps[0]);
+    if (!comp) return { ok: false, reason: 'comp-not-found' };
+
+    const correctMap = comp.answerCorrect || {};
+    const bankWords = Array.from(comp.renderRoot?.querySelectorAll('.item-drag .drag-select') || []);
+    const blanks = Array.from(comp.renderRoot?.querySelectorAll('.dragtext[name=dragtext][ind]') || []);
+
+    const filled = [];
+    for (const [blankInd, wordId] of Object.entries(correctMap)) {
+      const blank = blanks.find(b => b.getAttribute('ind') === blankInd);
+      const word = bankWords.find(w => w.getAttribute('data-id') === String(wordId));
+      if (blank && word) {
+        blanks.forEach(b => b.classList.remove('selectpoint'));
+        blank.classList.add('selectpoint');
+        word.click();
+        filled.push({ blankInd, word: word.innerText.trim() });
+        await new Promise(res => setTimeout(res, 250));
+      }
+    }
+    return { ok: filled.length > 0, filled };
+  }, answer.answer, qIndex);
+
+  return res;
+}
+
+// --- Điền khuyết hiện đại (<type-fill-me>) ---
+async function fillFillMe(page, question, answer) {
+  const cleanVal = String(answer.answer || '').trim();
+  const qIndex = getQuestionIndex(question);
+  const res = await page.evaluate(async (targetAns, idx) => {
+    function getAllDeep(sel, root = document) {
+      let results = [];
+      try { results.push(...Array.from(root.querySelectorAll(sel))); } catch {}
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.shadowRoot) {
+          try { results.push(...getAllDeep(sel, n.shadowRoot)); } catch {}
+        }
+      }
+      return Array.from(new Set(results));
+    }
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const searchRoot = item ? (item.shadowRoot || item) : document;
+    const comps = getAllDeep('type-fill-me, type-fill-me-mobile', searchRoot);
+    const comp = item ? comps[0] : (comps[idx] || comps[0]);
+    if (!comp) return { ok: false, reason: 'type-fill-me-not-found' };
+
+    const input = comp.shadowRoot?.querySelector('#fillme-input input, input[placeholder="?"]');
+    if (input) {
+      input.value = targetAns;
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    }
+    comp.userAnswer = { '0': targetAns };
+    return { ok: true, userAnswer: comp.userAnswer };
+  }, cleanVal, qIndex);
+
+  return res;
+}
+
+// --- Điểm nóng ảnh (Hotspot - q_type: 11) ---
 async function fillHotspot(page, question, answer) {
-  const zones = await page.evaluate(() => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  const qIndex = getQuestionIndex(question);
+  // Cuộn ảnh vào giữa màn hình trước khi tính tọa độ Viewport (tránh lệch tọa độ CDP mouse.click)
+  await page.evaluate((idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const img = root.querySelector('img.hotspot-img, img.question-img, img, canvas') || document.querySelector('img.hotspot-img, img.question-img, img, canvas');
+    if (img) img.scrollIntoView({ behavior: 'instant', block: 'center' });
+  }, qIndex).catch(() => {});
+  await new Promise((r) => setTimeout(r, 100));
+
+  const zones = await page.evaluate((idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
@@ -532,11 +820,10 @@ async function fillHotspot(page, question, answer) {
           y: r.top + r.height / 2,
         };
       });
-  });
+  }, qIndex);
 
   if (!zones.length) return { ok: false, reason: 'no-hotspot-zones' };
 
-  // Ưu tiên khớp theo mô tả vị trí mà AI trả về
   const desc = String(answer.answer || '').trim().toLowerCase();
   let target = -1;
   if (desc) {
@@ -545,7 +832,6 @@ async function fillHotspot(page, question, answer) {
       target = zones.findIndex((z) => z.text && z.text.toLowerCase().includes(desc));
     }
   }
-  // Dùng box tương đối nếu AI trả về toạ độ
   if (target < 0 && answer.box && typeof answer.box === 'object') {
     const b = answer.box;
     let vw = 1366;
@@ -577,114 +863,365 @@ async function fillHotspot(page, question, answer) {
   return { ok: true, zone: target };
 }
 
-// --- Gạch chân / chọn từ ---
+// --- Gạch chân / chọn từ (q_type: 8) ---
 async function fillWordSelect(page, question, answer) {
   const idxs = Array.isArray(answer.correctIndices)
     ? answer.correctIndices.map(Number).filter((n) => Number.isInteger(n) && n >= 0)
     : [];
   if (!idxs.length) return { ok: false, reason: 'no-word-indices' };
 
-  const words = await page.evaluate(() => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
+  // Kiểm tra trạng thái isSelected !== shouldSelect trước khi click
+  const qIndex = getQuestionIndex(question);
+  const res = await page.evaluate((targetIndices, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
     const all = [];
     const walk = (r) => {
       try {
-        all.push(...Array.from(r.querySelectorAll('[class*=underline], [class*=word-select], [class*=highlight-word], [data-word], [class*=token]')));
+        all.push(...Array.from(r.querySelectorAll('span.word, [class*=underline], [class*=word-select], [class*=highlight-word], [data-word], [class*=token]')));
       } catch {}
       try {
         for (const n of r.querySelectorAll('*')) if (n.shadowRoot) walk(n.shadowRoot);
       } catch {}
     };
     walk(root);
-    return all
-      .filter((el) => {
-        const r = el.getBoundingClientRect();
-        return r.width > 2 && r.height > 2;
-      })
-      .map((el) => {
-        const r = el.getBoundingClientRect();
-        return {
-          text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
-          x: r.left + r.width / 2,
-          y: r.top + r.height / 2,
-        };
-      });
-  });
-
-  if (!words.length) return { ok: false, reason: 'no-word-elements' };
-
-  let clicked = 0;
-  for (const i of idxs) {
-    const w = words[i];
-    if (!w) continue;
-    try {
-      await page.mouse.click(w.x, w.y);
-      await new Promise((r) => setTimeout(r, 150));
-      clicked++;
-    } catch {}
-  }
-  if (!clicked) return { ok: false, reason: 'word-click-failed' };
-  return { ok: true, clicked };
-}
-
-// --- Tự luận ---
-async function fillEssay(page, question, answer) {
-  const text = String(answer.answer || '').trim();
-  if (!text) return { ok: false, reason: 'no-essay-text' };
-
-  const res = await page.evaluate((val) => {
-    const defRoot = document.querySelector('default-root');
-    const root = defRoot?.shadowRoot || defRoot || document;
-    const all = [];
-    const walk = (r) => {
-      try {
-        all.push(...Array.from(r.querySelectorAll('[contenteditable="true"], textarea, .ProseMirror, .ql-editor, [class*=rich-text], [class*=editor]')));
-      } catch {}
-      try {
-        for (const n of r.querySelectorAll('*')) if (n.shadowRoot) walk(n.shadowRoot);
-      } catch {}
-    };
-    walk(root);
-    const ed = all.find((el) => {
+    const wordEls = all.filter((el) => {
       const r = el.getBoundingClientRect();
-      return r.width > 20 && r.height > 10;
+      return r.width > 2 && r.height > 2;
     });
-    if (!ed) return { ok: false, reason: 'no-editor' };
 
-    ed.scrollIntoView({ behavior: 'instant', block: 'center' });
-    ed.focus();
+    if (!wordEls.length) return { ok: false, reason: 'no-word-elements' };
 
-    const isTextarea = ed.tagName === 'TEXTAREA';
-    if (isTextarea) {
-      ed.value = val;
-      ed.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      ed.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    } else {
-      // contenteditable: xoá nội dung cũ rồi chèn text
-      try {
-        ed.innerHTML = '';
-      } catch {}
-      const lines = val.split('\n');
-      lines.forEach((line, i) => {
-        if (i > 0) ed.appendChild(document.createElement('br'));
-        ed.appendChild(document.createTextNode(line));
-      });
-      ed.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: val }));
-      ed.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    }
-    return { ok: true, tag: ed.tagName };
-  }, text);
-
-  if (!res.ok) return res;
-
-  // Gõ thêm bằng bàn phím để chắc chắn framework bắt được input event
-  try {
-    await page.keyboard.press('Backspace');
-    await page.keyboard.type(text.slice(0, 2000), { delay: 8 });
-  } catch {}
+    const targetSet = new Set(targetIndices);
+    let changed = 0;
+    wordEls.forEach((el, i) => {
+      const shouldSelect = targetSet.has(i);
+      const isSelected = el.classList.contains('selected') || el.classList.contains('underlined') || el.classList.contains('active') || el.classList.contains('tw-selected');
+      if (shouldSelect !== isSelected) {
+        el.click();
+        changed++;
+      }
+    });
+    return { ok: changed > 0 || targetSet.size > 0, changed };
+  }, idxs, qIndex);
 
   return res;
+}
+
+// --- Tự luận Lexical / Editor (q_type: 18) ---
+async function fillEssay(page, question, answer) {
+  const essayText = String(answer.answer || '').trim();
+  if (!essayText) return { ok: false, reason: 'no-essay-text' };
+
+  const qIndex = getQuestionIndex(question);
+  const placeholderSel = 'textarea.typing-para, textarea.text-para, type-paragraph, type-paragraph-mobile, div[data-placeholder]';
+  const editorSelector = 'div[contenteditable="true"][data-lexical-editor="true"], type-paragraph div[contenteditable="true"], type-paragraph-mobile div[contenteditable="true"], div.ContentEditable__root';
+
+  // 1. Click mở khung soạn thảo nếu vẫn đang ở trạng thái placeholder (hỗ trợ Shadow DOM)
+  await page.evaluate((idx, sel) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const walkFind = (r) => {
+      try {
+        const direct = r.querySelector(sel);
+        if (direct) return direct;
+      } catch {}
+      try {
+        for (const n of r.querySelectorAll('*')) {
+          if (n.shadowRoot) {
+            const found = walkFind(n.shadowRoot);
+            if (found) return found;
+          }
+        }
+      } catch {}
+      return null;
+    };
+    const ph = walkFind(root);
+    if (ph) ph.click();
+  }, qIndex, placeholderSel).catch(() => {});
+
+  // 2. Chờ Lexical Editor thực sự mount vào DOM (kể cả trong Shadow DOM) và focus/click vào nó
+  const editorBox = await (async () => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const box = await page.evaluate((idx, sel) => {
+        const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+          document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+          document.querySelectorAll('default-root')[idx];
+        const scope = item || document.querySelector('default-root') || document;
+        const root = scope.shadowRoot || scope;
+        const walkFind = (r) => {
+          try {
+            const direct = r.querySelector(sel);
+            if (direct) return direct;
+          } catch {}
+          try {
+            for (const n of r.querySelectorAll('*')) {
+              if (n.shadowRoot) {
+                const found = walkFind(n.shadowRoot);
+                if (found) return found;
+              }
+            }
+          } catch {}
+          return null;
+        };
+        const el = walkFind(root);
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        el.focus();
+        try {
+          document.execCommand('selectAll', false, null);
+          document.execCommand('delete', false, null);
+        } catch {}
+        return rect.width > 0 && rect.height > 0
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : { x: 0, y: 0 };
+      }, qIndex, editorSelector).catch(() => null);
+      if (box) return box;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return null;
+  })();
+
+  if (editorBox && editorBox.x > 0 && editorBox.y > 0) {
+    await page.mouse.click(editorBox.x, editorBox.y).catch(() => {});
+  }
+
+  // 3. Chèn toàn bộ đoạn văn tức thì qua CDP Input.insertText (Lexical bắt sự kiện này chuẩn 100%)
+  try {
+    const client = await page.target().createCDPSession();
+    try {
+      await client.send('Input.insertText', { text: essayText });
+    } finally {
+      await client.detach().catch(() => {});
+    }
+  } catch {
+    await page.keyboard.type(essayText, { delay: 10 }).catch(() => {});
+  }
+
+  // 4. Đợi 200ms rồi bấm nút #btn-done nằm TRONG phạm vi câu tự luận đó để lưu bài
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate((idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const walkFind = (r, sel) => {
+      try {
+        const direct = r.querySelector(sel);
+        if (direct) return direct;
+      } catch {}
+      try {
+        for (const n of r.querySelectorAll('*')) {
+          if (n.shadowRoot) {
+            const found = walkFind(n.shadowRoot, sel);
+            if (found) return found;
+          }
+        }
+      } catch {}
+      return null;
+    };
+    const doneBtn = walkFind(root, 'type-paragraph #btn-done, type-paragraph-mobile #btn-done, #btn-done');
+    if (doneBtn && (doneBtn.offsetParent !== null || doneBtn.offsetWidth > 0 || doneBtn.offsetHeight > 0)) {
+      doneBtn.click();
+    }
+  }, qIndex).catch(() => {});
+
+  return { ok: true, method: 'lexical-cdp' };
+}
+
+// --- Sắp xếp từ / thứ tự (Rearrange / Word Order - q_type: 3, 9) ---
+async function fillRearrange(page, question, answer) {
+  const targetWords = Array.isArray(answer.words)
+    ? answer.words
+    : String(answer.answer || answer.correctText || '').trim().split(/\s+/);
+  if (!targetWords.length) return { ok: false, reason: 'no-target-words' };
+
+  const qIndex = getQuestionIndex(question);
+  return page.evaluate((words, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const norm = (s) => String(s || '').trim().normalize('NFC').toLowerCase().replace(/[.,!?;:]/g, '');
+
+    const pool = root.querySelector('.word-pool, .source-words, .box-words, type-order, type-order-mobile, type-rearrange') || root;
+    const poolBtns = Array.from(pool.querySelectorAll('.word-item, .qdrag, button, .sortable-item, [data-word]'));
+
+    let clicked = 0;
+    for (const w of words) {
+      const nw = norm(w);
+      const btn = poolBtns.find((b) => {
+        if (b.classList.contains('used') || b.classList.contains('disabled') || b.disabled) return false;
+        return norm(b.innerText || b.textContent || '') === nw;
+      });
+      if (btn) {
+        btn.click();
+        btn.classList.add('used');
+        clicked++;
+      }
+    }
+    return { ok: clicked > 0, clicked, total: words.length };
+  }, targetWords, qIndex);
+}
+
+// --- Luyện nói / Ghi âm (Speaking / Recording - q_type: 10, 15) ---
+async function fillSpeaking(page, question, answer) {
+  const targetText = String(answer.answer || question.prompt || '').trim();
+  const qIndex = getQuestionIndex(question);
+  return page.evaluate(async (text, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+
+    const walkFind = (r, sel) => {
+      try {
+        const direct = r.querySelector(sel);
+        if (direct) return direct;
+      } catch {}
+      try {
+        for (const n of r.querySelectorAll('*')) {
+          if (n.shadowRoot) {
+            const found = walkFind(n.shadowRoot, sel);
+            if (found) return found;
+          }
+        }
+      } catch {}
+      return null;
+    };
+
+    const component = walkFind(root, 'type-speaking, type-record, type-speaking-mobile, type-record-mobile');
+    if (typeof component?.setTranscript === 'function') {
+      if (!text) return { ok: false, reason: 'empty-transcript' };
+      const result = await component.setTranscript(text);
+      const actual = component.transcript ?? component.userAnswer;
+      return result === true || actual === text
+        ? { ok: true, text }
+        : { ok: false, reason: 'transcript-unconfirmed' };
+    }
+
+    const searchRoot = component?.shadowRoot || component || root;
+    const micBtn = walkFind(
+      searchRoot,
+      '.btn-record, [data-action="record"], .mic-icon, button[class*="record"], button[class*="mic"], button[aria-label*="record" i], button[aria-label*="mic" i]'
+    );
+    if (micBtn) {
+      micBtn.click();
+      return { ok: true, method: 'mic-click', text };
+    }
+    return { ok: false, reason: text ? 'transcript-unsupported' : 'empty-transcript' };
+  }, targetText, qIndex);
+}
+
+// --- Ô chữ / Tìm từ (Crossword & Word Search - q_type: 16) ---
+async function fillCrossword(page, question, answer) {
+  const data = answer.grid || answer.answer || '';
+  const qIndex = getQuestionIndex(question);
+  return page.evaluate((d, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const inputs = Array.from(root.querySelectorAll('table.crossword-grid input.cw-cell, .cw-cell, input[data-row]'));
+    if (!inputs.length) return { ok: false, reason: 'no-crossword-inputs' };
+
+    let filled = 0;
+    if (Array.isArray(d)) {
+      d.forEach((cell) => {
+        const inp = inputs.find((i) => i.getAttribute('data-row') == cell.r && i.getAttribute('data-col') == cell.c);
+        if (inp) {
+          inp.value = String(cell.char || '').toUpperCase();
+          inp.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          filled++;
+        }
+      });
+    }
+    return { ok: filled > 0, filled };
+  }, data, qIndex);
+}
+
+// --- Trình soạn thảo Code (Code Editor - q_type: 19) ---
+async function fillCodeEditor(page, question, answer) {
+  const code = String(answer.code || answer.answer || '').trim();
+  if (!code) return { ok: false, reason: 'no-code-provided' };
+
+  const qIndex = getQuestionIndex(question);
+  return page.evaluate((codeText, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const cm = root.querySelector('.cm-content');
+    if (cm) {
+      cm.focus();
+      const dt = new DataTransfer();
+      dt.setData('text/plain', codeText);
+      cm.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+      return { ok: true, type: 'codemirror' };
+    }
+    if (window.ace && typeof window.ace.edit === 'function') {
+      const aceEl = root.querySelector('.ace_editor');
+      if (aceEl) {
+        const editor = window.ace.edit(aceEl);
+        if (editor) {
+          editor.setValue(codeText, 1);
+          return { ok: true, type: 'ace' };
+        }
+      }
+    }
+    const ta = root.querySelector('textarea.code-input, textarea');
+    if (ta) {
+      ta.value = codeText;
+      ta.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      return { ok: true, type: 'textarea' };
+    }
+    return { ok: false, reason: 'no-code-editor-found' };
+  }, code, qIndex);
+}
+
+// --- Trả lời ngắn số THPT (Strict Numerical Short Answer - q_type: 2, 14) ---
+async function fillStrictShortAnswer(page, question, answer) {
+  const val = String(answer.answer || answer.correctText || '').trim();
+  const qIndex = getQuestionIndex(question);
+  return page.evaluate((numStr, idx) => {
+    const item = document.querySelectorAll('.itemx.q-view-itemx.question')[idx] ||
+      document.getElementById('user-test-' + idx) || document.querySelectorAll('.quizx.question-hold')[idx] ||
+      document.querySelectorAll('default-root')[idx];
+    const scope = item || document.querySelector('default-root') || document;
+    const root = scope.shadowRoot || scope;
+    const inp = root.querySelector('type-short-answer input, input.short-ans-input, input.tw-input-content-default-md');
+    if (!inp) return { ok: false, reason: 'no-short-ans-input' };
+
+    const placeholder = inp.getAttribute('placeholder') || '';
+    const pattern = inp.getAttribute('pattern') || '';
+    let finalStr = numStr;
+    if (placeholder.includes(',') || /^[0-9,-]+$/.test(pattern)) {
+      finalStr = finalStr.replace('.', ',');
+    }
+    const proto = HTMLInputElement.prototype;
+    const setVal = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (setVal) setVal.call(inp, finalStr); else inp.value = finalStr;
+
+    inp.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    inp.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+    inp.dispatchEvent(new Event('focusout', { bubbles: true, composed: true }));
+    return { ok: true, value: finalStr };
+  }, val, qIndex);
 }
 
 // ---------------------------------------------------------------------------
@@ -693,9 +1230,12 @@ async function fillEssay(page, question, answer) {
 
 // Dò dạng câu hỏi mở rộng. Trả về null nếu câu hỏi thuộc dạng cơ bản
 // (trắc nghiệm / điền khuyết / đúng-sai) vốn đã được xử lý ở browser-engine.
-async function detect(page) {
+async function detect(page, index = 0) {
   try {
-    const res = await page.evaluate(detectInPage);
+    const questionIndex = Number.isSafeInteger(index) && index >= 0 ? index : 0;
+    const functions = [collectShadowRoots, deepQuery, deepQueryAll, isVisible, elText, detectInPage];
+    const source = functions.map(fn => fn.toString()).join('\n');
+    const res = await page.evaluate(`(() => { ${source}; return detectInPage(${questionIndex}); })()`);
     if (res && res.type) return res;
   } catch {}
   return null;
@@ -718,6 +1258,23 @@ async function fill(page, question, answer) {
       return fillWordSelect(page, question, answer);
     case 'essay':
       return fillEssay(page, question, answer);
+    case 'rearrange':
+    case 'order':
+      return fillRearrange(page, question, answer);
+    case 'speaking':
+    case 'record':
+      return fillSpeaking(page, question, answer);
+    case 'crossword':
+    case 'word_search':
+      return fillCrossword(page, question, answer);
+    case 'code_editor':
+      return fillCodeEditor(page, question, answer);
+    case 'strict_short_answer':
+      return fillStrictShortAnswer(page, question, answer);
+    case 'drag_text':
+      return fillDragText(page, question, answer);
+    case 'fill_me':
+      return fillFillMe(page, question, answer);
     default:
       return { ok: false, reason: `unsupported-extended-type:${question.type}` };
   }
@@ -725,8 +1282,12 @@ async function fill(page, question, answer) {
 
 // Có phải dạng mở rộng không (dùng để quyết định đường đi trong browser-engine)
 function isExtended(type) {
-  return ['dropdown', 'drag_drop', 'grouping', 'matching', 'hotspot', 'word_select', 'underline', 'essay']
-    .includes(type);
+  return [
+    'dropdown', 'drag_drop', 'grouping', 'matching', 'hotspot',
+    'word_select', 'underline', 'essay', 'rearrange', 'order',
+    'speaking', 'record', 'crossword', 'word_search', 'code_editor',
+    'strict_short_answer', 'drag_text', 'fill_me'
+  ].includes(type);
 }
 
 module.exports = { detect, fill, isExtended };

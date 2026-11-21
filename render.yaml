@@ -1,27 +1,88 @@
+databases:
+  - name: giaiolm-db
+    plan: basic-1gb
+    region: singapore
+    ipAllowList: []
+
 services:
   - type: web
-    name: olm-solver-backend
-    env: docker
-    plan: free
+    name: giaiolm-api
+    runtime: docker
+    plan: starter
     region: singapore
     branch: main
-    autoDeploy: true
+    numInstances: 2
+    healthCheckPath: /api/ready
+    # Uncomment after buying your custom domain:
+    # domains:
+    #   - api.giaiolm.com
     envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: giaiolm-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: OPENAI_API_KEY
-        value: sk-61f93586f21370754d29bd97e8f36dd7a7089c5ee15245ff21bfef3f766dfe9d
+        sync: false
       - key: OPENAI_BASE_URL
         value: https://sub.digishop.work/v1
       - key: OPENAI_MODEL
         value: gpt-6-luna
-      - key: OPENAI_AUTH_HEADER
-        value: bearer
-      - key: ADMIN_PASSWORD
-        value: MayNgu789@
-      - key: PUPPETEER_HEADLESS
+      - key: PUBLIC_ORIGINS
+        value: https://giaiolm.com,https://www.giaiolm.com
+      - key: ALLOW_VERCEL_ORIGINS
         value: "true"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DB_POOL_SIZE
+        value: "10"
+      - key: MAX_QUEUED_RUNS
+        value: "250"
+      - key: UPSTREAM_REQUEST_SLOTS
+        value: "12"
+
+  - type: worker
+    name: giaiolm-worker
+    runtime: docker
+    dockerCommand: node scripts/run-worker.js
+    plan: standard
+    region: singapore
+    branch: main
+    numInstances: 1
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: giaiolm-db
+          property: connectionString
       - key: SESSION_SECRET
-        generateValue: true
-      - key: PORT
-        value: "3000"
-      - key: PROXY_URL
-        value: "171.241.8.179:18918:mikonkhanh:abc123@123"
+        fromService:
+          type: web
+          name: giaiolm-api
+          envVarKey: SESSION_SECRET
+      - key: OPENAI_API_KEY
+        fromService:
+          type: web
+          name: giaiolm-api
+          envVarKey: OPENAI_API_KEY
+      - key: OPENAI_BASE_URL
+        fromService:
+          type: web
+          name: giaiolm-api
+          envVarKey: OPENAI_BASE_URL
+      - key: OPENAI_MODEL
+        fromService:
+          type: web
+          name: giaiolm-api
+          envVarKey: OPENAI_MODEL
+      - key: PUPPETEER_NO_SANDBOX
+        value: "true"
+      - key: WORKER_RUN_SLOTS
+        value: "1"
+      - key: WORKER_HOMEWORK_CONCURRENCY
+        value: "2"
+      - key: DB_POOL_SIZE
+        value: "4"

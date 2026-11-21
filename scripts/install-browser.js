@@ -2,15 +2,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { execFileSync } = require('child_process');
-const { log } = require('../src/session-store');
 
 async function main() {
   try {
     const puppeteer = require('puppeteer');
-    const executable = puppeteer.executablePath();
-    if (fs.existsSync(executable)) {
+    const executable = await puppeteer.executablePath().catch(() => null);
+    if (executable && fs.existsSync(executable)) {
       console.log(`Puppeteer browser already installed: ${executable}`);
       return;
     }
@@ -21,7 +19,9 @@ async function main() {
   }
 
   console.log('Install Puppeteer Chromium with: npx puppeteer browsers install chrome');
-  execFileSync('npx', ['puppeteer', 'browsers', 'install', 'chrome'], { stdio: 'inherit' });
+  const metadata = require.resolve('puppeteer/package.json');
+  const cli = path.resolve(path.dirname(metadata), require(metadata).bin.puppeteer);
+  execFileSync(process.execPath, [cli, 'browsers', 'install', 'chrome'], { stdio: 'inherit' });
 }
 
 main().catch((err) => {

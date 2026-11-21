@@ -1,170 +1,171 @@
 'use strict';
 
-// Thin API wrapper. The session token and license live in localStorage;
-// the OLM password never reaches the client beyond the login request itself.
+// The browser sends the web session cookie with each API request.
 
 const Api = (() => {
-  const TOKEN_KEY = 'olm.sessionId';
-  const SETTINGS_KEY = 'olm.settings';
-  const SERVER_URL_KEY = 'olm.serverUrl';
-  const AUTH_KEY = 'olm.auth';
   const HWID_KEY = 'olm.device_hwid';
   const LICENSE_KEY = 'olm.license';
 
-  // URL Cloudflare Tunnel mặc định kết nối tới máy tính (dùng cho mobile app iOS khi dùng 4G/5G hoặc ngoài Wi-Fi)
-  const DEFAULT_TUNNEL_URL = 'https://plot-metallic-workstation-military.trycloudflare.com';
+  try {
+    localStorage.removeItem('olm.auth');
+    localStorage.removeItem('olm.cookie');
+    localStorage.removeItem('olm.sessionId');
+    localStorage.removeItem('olm.currentUser');
+    localStorage.removeItem('olm.serverUrl');
+  } catch {}
 
-  function getServerUrl() {
+  const deployment = window.OLM_DEPLOYMENT || {};
+  const apiOrigin = deployment.apiOrigin || '';
+  let currentUser = '';
+
+  async function computeDeviceFingerprint() {
+    let glRenderer = '';
     try {
-      const custom = (localStorage.getItem(SERVER_URL_KEY) || '').trim().replace(/\/+$/, '');
-      if (custom) return custom;
-    } catch {
-      /* ignore */
-    }
-
-    // Nếu chạy trên điện thoại (Capacitor iOS/Android) hoặc trên origin khác:
-    // Mặc định trỏ về đường link Cloudflare Tunnel của máy tính
-    const isNative = Boolean(window.Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:');
-
-    if (isNative) {
-      return DEFAULT_TUNNEL_URL;
-    }
-
-    return '';
-  }
-
-  function setServerUrl(value) {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        glRenderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : String(gl.getParameter(gl.RENDERER) || '');
+      }
+    } catch {}
+    const raw = [
+      navigator.platform || '',
+      navigator.hardwareConcurrency || '',
+      navigator.maxTouchPoints || '',
+      `${screen.width}x${screen.height}`,
+      window.devicePixelRatio || 1,
+      Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      navigator.language || '',
+      glRenderer,
+    ].join('|');
     try {
-      if (value) localStorage.setItem(SERVER_URL_KEY, value.trim().replace(/\/+$/, ''));
-      else localStorage.removeItem(SERVER_URL_KEY);
-    } catch {
-      /* storage unavailable */
+      if (window.crypto?.subtle) {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+        const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+        return 'OLM-HW-' + hex.slice(0, 24).toUpperCase();
+      }
+    } catch {}
+    let h = 2166136261;
+    for (let i = 0; i < raw.length; i++) {
+      h ^= raw.charCodeAt(i);
+      h = Math.imul(h, 16777619);
     }
+    return 'OLM-HW-' + (h >>> 0).toString(16).toUpperCase().padStart(8, '0');
   }
 
   async function getDeviceHWID() {
     try {
-      let hwid = localStorage.getItem(HWID_KEY);
-      if (hwid) return hwid;
-
-      if (window.Capacitor?.Plugins?.Device) {
-        try {
-          const idInfo = await window.Capacitor.Plugins.Device.getId();
-          if (idInfo && idInfo.identifier) {
-            hwid = 'ios_' + idInfo.identifier;
-            localStorage.setItem(HWID_KEY, hwid);
-            return hwid;
-          }
-        } catch {}
-      }
-
-      const randomPart = (window.crypto && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-      hwid = randomPart;
-      localStorage.setItem(HWID_KEY, hwid);
-      return hwid;
-    } catch {
-      return 'device_' + Date.now();
+      const stored = localStorage.getItem(HWID_KEY);
+      if (stored && stored.startsWith('OLM-HW-')) return stored;
+      const fp = await computeDeviceFingerprint();
+      localStorage.setItem(HWID_KEY, fp);
+      return fp;
+    } catch (e) {
+      return await computeDeviceFingerprint();
     }
   }
 
-  function getStoredLicense() {
+  function getStoredLicense(username = null) {
     try {
-      const raw = localStorage.getItem(LICENSE_KEY);
-      return raw ? JSON.parse(raw) : null;
+      const user = String(username || currentUser || '').toLowerCase();
+      if (!user) return null;
+      const saved = localStorage.getItem(LICENSE_KEY + '_' + user);
+      if (saved) return JSON.parse(saved);
+      const legacy = JSON.parse(localStorage.getItem(LICENSE_KEY));
+      return legacy?.olmUsername?.toLowerCase() === user ? legacy : null;
     } catch {
       return null;
     }
   }
 
-  function saveLicense(lic) {
+  function saveLicense(license, username = null) {
     try {
-      if (lic) localStorage.setItem(LICENSE_KEY, JSON.stringify(lic));
-      else localStorage.removeItem(LICENSE_KEY);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function token() {
-    try {
-      return localStorage.getItem(TOKEN_KEY) || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function setToken(value) {
-    try {
-      if (value) localStorage.setItem(TOKEN_KEY, value);
-      else localStorage.removeItem(TOKEN_KEY);
-    } catch {
-      /* storage unavailable */
-    }
-  }
-
-  function saveCredentials(username, password) {
-    try {
-      if (username && password) {
-        localStorage.setItem(AUTH_KEY, JSON.stringify({ username, password }));
-      } else {
-        localStorage.removeItem(AUTH_KEY);
-      }
-    } catch {
-      /* storage unavailable */
-    }
-  }
-
-  function getCredentials() {
-    try {
-      const raw = localStorage.getItem(AUTH_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  const COOKIE_KEY = 'olm.cookie';
-
-  function saveCookie(cookie) {
-    try {
-      if (cookie) localStorage.setItem(COOKIE_KEY, cookie);
-      else localStorage.removeItem(COOKIE_KEY);
+      const user = String(username || license?.olmUsername || currentUser || '').toLowerCase();
+      if (!user) return;
+      const key = LICENSE_KEY + '_' + user;
+      if (license) localStorage.setItem(key, JSON.stringify(license));
+      else localStorage.removeItem(key);
+      const legacy = JSON.parse(localStorage.getItem(LICENSE_KEY));
+      if (legacy?.olmUsername?.toLowerCase() === user) localStorage.removeItem(LICENSE_KEY);
     } catch {}
   }
 
-  function getCookie() {
-    try {
-      return localStorage.getItem(COOKIE_KEY) || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function clearCredentials() {
-    try {
-      localStorage.removeItem(AUTH_KEY);
-      localStorage.removeItem(COOKIE_KEY);
-    } catch {
-      /* storage unavailable */
-    }
-  }
-
-  async function request(path, { method = 'GET', body, headers = {}, _isRetry = false } = {}) {
-    const opts = {
-      method,
-      headers: { ...headers },
+  function openEvents(path) {
+    const controller = new AbortController();
+    let retry;
+    const stream = {
+      readyState: 0,
+      close() {
+        stream.readyState = 2;
+        clearTimeout(retry);
+        controller.abort();
+      },
     };
 
-    const t = token();
-    if (t) opts.headers['X-Session-Id'] = t;
+    async function connect() {
+      try {
+        const response = await fetch(apiOrigin + path, {
+          credentials: 'include',
+          signal: controller.signal,
+          redirect: 'error',
+        });
+        if ([401, 403, 410].includes(response.status)) {
+          stream.close();
+          const fatalErr = new Error('Phiên sự kiện đã hết hạn.');
+          fatalErr.fatal = true;
+          fatalErr.status = response.status;
+          stream.onerror?.(fatalErr);
+          return;
+        }
+        if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
+          throw new Error('Không kết nối được luồng sự kiện.');
+        }
+        stream.readyState = 1;
+        stream.onopen?.();
+        const decoder = new TextDecoder();
+        const reader = response.body.getReader();
+        let buffer = '';
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            if (buffer.length > 2_000_000) throw new Error('Sự kiện quá lớn.');
+            let end;
+            while ((end = buffer.indexOf('\n\n')) !== -1) {
+              const frame = buffer.slice(0, end);
+              buffer = buffer.slice(end + 2);
+              if (frame.startsWith('data: ')) stream.onmessage?.({ data: frame.slice(6) });
+            }
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) stream.onerror?.(err);
+      }
+      if (!controller.signal.aborted) {
+        stream.readyState = 0;
+        retry = setTimeout(connect, 2000);
+      }
+    }
+    connect();
+    return stream;
+  }
+
+  async function request(path, { method = 'GET', body, headers = {} } = {}) {
+    const opts = {
+      method,
+      redirect: 'error',
+      credentials: 'include',
+      headers: { ...headers },
+    };
 
     const lic = getStoredLicense();
     if (lic && lic.key) {
       opts.headers['X-License-Key'] = lic.key;
       let devHwid = '';
-      try { devHwid = localStorage.getItem(HWID_KEY) || lic.hwid || ''; } catch {}
+      try { devHwid = localStorage.getItem(HWID_KEY) || lic.hwid || ''; } catch (e) {}
       opts.headers['X-Device-HWID'] = devHwid;
     }
 
@@ -173,15 +174,11 @@ const Api = (() => {
       opts.body = JSON.stringify(body);
     }
 
-    const serverUrl = getServerUrl();
-    const finalUrl = (serverUrl && path.startsWith('/')) ? `${serverUrl}${path}` : path;
-
     let res;
     try {
-      res = await fetch(finalUrl, opts);
+      res = await fetch(apiOrigin + path, opts);
     } catch (err) {
-      const target = serverUrl ? `tới máy chủ (${serverUrl})` : 'tới máy chủ';
-      throw new Error(`Không kết nối được ${target}. Kiểm tra kết nối mạng hoặc địa chỉ máy chủ.`);
+      throw new Error('Không kết nối được máy chủ. Vui lòng kiểm tra kết nối mạng.');
     }
 
     const text = await res.text();
@@ -190,31 +187,11 @@ const Api = (() => {
       try {
         data = JSON.parse(text);
       } catch {
-        data = { error: text.slice(0, 300) };
+        throw new Error('Máy chủ không trả về JSON hợp lệ.');
       }
     }
 
     if (!res.ok) {
-      // Auto-relogin silently if session expired on server
-      if (res.status === 401 && (data.code === 'NO_SESSION' || data.code === 'NO_TOKEN') && !_isRetry && !path.includes('/api/login')) {
-        const creds = getCredentials();
-        const savedCookie = getCookie();
-        try {
-          let loginRes = null;
-          if (creds && creds.username && creds.password) {
-            loginRes = await request('/api/login', { method: 'POST', body: { username: creds.username, password: creds.password }, _isRetry: true });
-          } else if (savedCookie) {
-            loginRes = await request('/api/login-cookie', { method: 'POST', body: { cookie: savedCookie }, _isRetry: true });
-          }
-          if (loginRes && loginRes.sessionId) {
-            setToken(loginRes.sessionId);
-            return await request(path, { method, body, headers, _isRetry: true });
-          }
-        } catch {
-          /* fallback to throw error */
-        }
-      }
-
       const message = data.error || `HTTP ${res.status}`;
       const error = new Error(message);
       error.status = res.status;
@@ -227,25 +204,16 @@ const Api = (() => {
   }
 
   return {
-    token,
-    setToken,
-    getServerUrl,
-    setServerUrl,
-    DEFAULT_TUNNEL_URL,
-    DEFAULT_CLOUD_URL: DEFAULT_TUNNEL_URL,
+    setCurrentUser: (username) => { currentUser = username || ''; },
+    getCurrentUser: () => currentUser,
+    apiOrigin,
+    liveEvents: deployment.liveEvents !== false,
     getDeviceHWID,
     getStoredLicense,
     saveLicense,
-    saveCredentials,
-    getCredentials,
-    saveCookie,
-    getCookie,
-    clearCredentials,
+    openEvents,
 
-    health: () => request('/api/health'),
-    tunnel: () => request('/api/tunnel'),
     login: (username, password) => request('/api/login', { method: 'POST', body: { username, password } }),
-    loginWithCookie: (cookie) => request('/api/login-cookie', { method: 'POST', body: { cookie } }),
     logout: () => request('/api/logout', { method: 'POST' }),
     session: () => request('/api/session'),
     homeworks: () => request('/api/homeworks'),
@@ -257,25 +225,10 @@ const Api = (() => {
     submit: (payload) => request('/api/submit', { method: 'POST', body: payload }),
 
     // License API
-    activateLicense: (key, name, hwid, deviceInfo) =>
-      request('/api/license/activate', { method: 'POST', body: { key, name, hwid, deviceInfo } }),
-    verifyLicense: (key, hwid) =>
-      request('/api/license/verify', { method: 'POST', body: { key, hwid } }),
+    activateLicense: (key, olmUsername, hwid, deviceName, name) =>
+      request('/api/license/activate', { method: 'POST', body: { key, olmUsername, hwid, deviceName, name } }),
+    verifyLicense: (key, olmUsername, hwid, deviceName) =>
+      request('/api/license/verify', { method: 'POST', body: { key, olmUsername, hwid, deviceName } }),
 
-    loadSettings() {
-      try {
-        return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-      } catch {
-        return {};
-      }
-    },
-
-    saveSettings(settings) {
-      try {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-      } catch {
-        /* ignore */
-      }
-    },
   };
 })();

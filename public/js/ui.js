@@ -64,7 +64,12 @@ const UI = (() => {
 
   function appendLog(entry) {
     if (!entry || !entry.message) return;
-    const msg = String(entry.message).trim();
+    let msg = String(entry.message || '')
+      .replace(/[\uE000-\uF8FF]/g, '')
+      .replace(/\s*=/g, '≠')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!msg) return;
 
     // Deduplicate identical logs within 2 seconds
@@ -148,8 +153,10 @@ const UI = (() => {
     if (!pill) return;
     const labels = {
       idle: 'Sẵn sàng',
+      queued: 'Đang chờ',
       running: 'Đang giải bài',
-      done: 'Đã hoàn thành',
+      done: 'Đã nộp',
+      partial: 'Nộp một phần',
       error: 'Có lỗi',
       stopped: 'Đã dừng',
     };
@@ -160,12 +167,13 @@ const UI = (() => {
   function toast(message, kind = 'info') {
     let box = document.getElementById('toast');
     if (!box) {
-      box = el('div', { id: 'toast', class: `alert alert-${kind}` });
+      box = el('div', { id: 'toast', role: 'status', class: `alert alert-${kind}` });
       box.style.position = 'fixed';
       box.style.left = '16px';
       box.style.right = '16px';
       box.style.bottom = 'calc(var(--tabbar-h) + var(--safe-bottom) + 14px)';
       box.style.zIndex = '100';
+      box.style.pointerEvents = 'none';
       box.style.boxShadow = '0 8px 24px rgba(0,0,0,0.5)';
       document.body.append(box);
     }
@@ -195,7 +203,7 @@ const UI = (() => {
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.45);
-    } catch {
+    } catch (e) {
       /* audio autoplay restricted */
     }
   }
@@ -204,37 +212,10 @@ const UI = (() => {
   async function notify(title, body) {
     playBeep();
     if (navigator.vibrate) {
-      try { navigator.vibrate([200, 100, 200]); } catch {}
+      try { navigator.vibrate([200, 100, 200]); } catch (e) {}
     }
 
-    // 1. Capacitor Native Push/Local Notifications (if running as native iOS App)
-    const localNotif = window.Capacitor?.Plugins?.LocalNotifications;
-    if (localNotif) {
-      try {
-        let perm = await localNotif.checkPermissions().catch(() => null);
-        if (!perm || perm.display !== 'granted') {
-          perm = await localNotif.requestPermissions().catch(() => null);
-        }
-        await localNotif.schedule({
-          notifications: [
-            {
-              id: Math.floor(Math.random() * 800000) + 1000,
-              title: title || 'OLM Solver',
-              body: body || 'Đã hoàn thành giải bài tập!',
-              schedule: { at: new Date(Date.now() + 100) },
-              sound: 'default',
-              actionTypeId: '',
-              extra: null,
-            },
-          ],
-        });
-        return;
-      } catch (err) {
-        console.warn('Capacitor notification error:', err);
-      }
-    }
-
-    // 2. Service Worker Notification (iOS 16.4+ Web Push & PWA)
+    // 1. Service Worker Notification (iOS 16.4+ Web Push & PWA)
     if ('serviceWorker' in navigator && 'Notification' in window && Notification.permission === 'granted') {
       try {
         const reg = await navigator.serviceWorker.ready;
@@ -248,7 +229,7 @@ const UI = (() => {
           });
           return;
         }
-      } catch {
+      } catch (e) {
         /* fallback */
       }
     }
@@ -257,7 +238,7 @@ const UI = (() => {
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
         new Notification(title, { body, icon: '/icons/icon.svg' });
-      } catch {}
+      } catch (e) {}
     }
   }
 
@@ -280,11 +261,6 @@ const UI = (() => {
     playBeep,
   };
 
-  if (typeof window !== 'undefined') {
-    window.UI = api;
-    window.Ui = api;
-  }
-  return api;
 })();
 
 if (typeof window !== 'undefined') {

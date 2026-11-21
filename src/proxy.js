@@ -5,9 +5,12 @@ const path = require('path');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-const SETTINGS_FILE = path.join(__dirname, '..', 'data', 'settings.json');
+const SETTINGS_FILE = path.join(process.env.OLM_DATA_DIR || path.join(__dirname, '..', 'data'), 'settings.json');
 
 let runtimeProxy = null;
+let sharedProxy;
+let refreshAt = 0;
+let refreshPromise;
 
 function loadStoredProxy() {
   try {
@@ -28,26 +31,38 @@ function loadStoredProxy() {
 runtimeProxy = loadStoredProxy();
 
 function getRuntimeProxy() {
+  if (sharedProxy !== undefined) return sharedProxy;
   return runtimeProxy || loadStoredProxy();
 }
 
-function saveStoredProxy(proxyUrl) {
-  runtimeProxy = proxyUrl ? proxyUrl.trim() : null;
-  try {
-    const dir = path.dirname(SETTINGS_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    let existing = {};
-    if (fs.existsSync(SETTINGS_FILE)) {
-      try {
-        existing = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-      } catch {}
-    }
-    existing.proxyUrl = runtimeProxy;
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(existing, null, 2));
-    console.log(`[proxy] Saved proxy settings: ${runtimeProxy ? runtimeProxy.replace(/:[^:@]+@/, ':****@') : '(disabled)'}`);
-  } catch (err) {
-    console.error('[proxy] Failed to save proxy to settings:', err.message);
+async function refreshSharedProxy({ force = false } = {}) {
+  const shared = require('./deployment-store');
+  if (!shared.configured || (!force && Date.now() < refreshAt)) return;
+  if (!refreshPromise) {
+    refreshPromise = shared.settings.getProxy().then((value) => {
+      sharedProxy = value;
+      refreshAt = Date.now() + 30000;
+    }).finally(() => { refreshPromise = null; });
   }
+  await refreshPromise;
+}
+
+async function saveProxy(proxyUrl) {
+  const shared = require('./deployment-store');
+  if (!shared.configured) return saveStoredProxy(proxyUrl);
+  await shared.settings.setProxy(proxyUrl || null);
+  await refreshSharedProxy({ force: true });
+}
+
+function saveStoredProxy(proxyUrl) {
+  const next = proxyUrl ? proxyUrl.trim() : null;
+  if (next && !parseProxy(next)) throw new Error('Địa chỉ proxy không hợp lệ.');
+  fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+  const existing = fs.existsSync(SETTINGS_FILE) ? JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) : {};
+  const file = SETTINGS_FILE + '.tmp';
+  fs.writeFileSync(file, JSON.stringify({ ...existing, proxyUrl: next }, null, 2), { mode: 0o600 });
+  fs.renameSync(file, SETTINGS_FILE);
+  runtimeProxy = next;
 }
 
 function parseProxy(rawStr) {
@@ -58,6 +73,7 @@ function parseProxy(rawStr) {
   const colonMatch = str.match(/^([a-zA-Z0-9.-]+):(\d+):([^:]+):(.+)$/);
   if (colonMatch) {
     const [, host, port, user, pass] = colonMatch;
+    if (Number(port) < 1 || Number(port) > 65535) return null;
     return {
       raw: str,
       protocol: 'http:',
@@ -77,11 +93,18 @@ function parseProxy(rawStr) {
     return null;
   }
 
-  const protocol = urlObj.protocol || 'http:';
-  const username = decodeURIComponent(urlObj.username || '');
-  const password = decodeURIComponent(urlObj.password || '');
+  const protocol = urlObj.protocol;
+  if (!['http:', 'https:', 'socks:', 'socks4:', 'socks4a:', 'socks5:', 'socks5h:'].includes(protocol) ||
+      !urlObj.hostname || (urlObj.pathname && urlObj.pathname !== '/') || urlObj.search || urlObj.hash) return null;
+  let username, password;
+  try {
+    username = decodeURIComponent(urlObj.username);
+    password = decodeURIComponent(urlObj.password);
+  } catch {
+    return null;
+  }
   const host = urlObj.hostname;
-  const port = Number(urlObj.port) || (protocol === 'https:' ? 443 : 80);
+  const port = Number(urlObj.port) || (protocol === 'https:' ? 443 : protocol.startsWith('socks') ? 1080 : 80);
 
   return {
     raw: str,
@@ -116,6 +139,7 @@ async function testProxy(rawStr) {
   const res = await axios.get('https://api.ipify.org?format=json', {
     httpsAgent: agent,
     httpAgent: agent,
+    proxy: false,
     timeout: 12000,
     headers: { 'User-Agent': 'Mozilla/5.0' },
   });
@@ -146,16 +170,19 @@ function createAxiosClient(jar) {
     return axios.create({
       httpsAgent: agent,
       httpAgent: agent,
+      proxy: false,
     });
   }
 
   const { wrapper } = require('axios-cookiejar-support');
-  return wrapper(axios.create({ jar, withCredentials: true }));
+  return wrapper(axios.create({ jar, withCredentials: true, proxy: false }));
 }
 
 module.exports = {
   getRuntimeProxy,
   saveStoredProxy,
+  saveProxy,
+  refreshSharedProxy,
   parseProxy,
   getAxiosAgent,
   createAxiosClient,

@@ -1,0 +1,47 @@
+:root {
+  --motion-out: cubic-bezier(.22, .75, .24, 1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+
+  ::view-transition-old(root) { animation: route-out 140ms ease-in both; }
+  ::view-transition-new(root) { animation: route-in 260ms var(--motion-out) both; }
+
+  .hero-copy > *, .view:not([hidden]) > .page-heading,
+  .login-card, #view-login.login-wrapper, .dashboard-heading, .dashboard-grid {
+    animation: surface-in 280ms var(--motion-out) both;
+  }
+
+  .hero-copy > h1 { animation-delay: 35ms; }
+  .hero-copy > .intro { animation-delay: 70ms; }
+  .hero-copy > .hero-actions, .dashboard-grid { animation-delay: 105ms; }
+
+  :is(.button, .btn, .btn-sub, .btn-icon, .tab, .filter-chip, .copy-btn) {
+    transition: scale 140ms var(--motion-out), translate 170ms var(--motion-out),
+      box-shadow 170ms ease-out, background-color 170ms ease-out,
+      border-color 170ms ease-out, color 170ms ease-out;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    :is(.button, .btn, .btn-sub):not(:disabled):hover {
+      translate: 0 -2px;
+      box-shadow: 0 5px 14px #173e7c29;
+    }
+  }
+
+  :is(.button, .btn, .btn-sub, .btn-icon, .tab, .filter-chip, .copy-btn):not(:disabled):active {
+    scale: .96;
+    translate: 0 1px;
+    transform: none;
+    transition-duration: 85ms;
+  }
+}
+
+@keyframes surface-in {
+  from { opacity: 0; translate: 0 8px; }
+  to { opacity: 1; translate: none; }
+}
+
+@keyframes route-out { to { opacity: 0; } }
+@keyframes route-in { from { opacity: 0; } }

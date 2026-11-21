@@ -5,5 +5,6 @@ echo ====================================================================
 echo   KHOI CHAY OLM SOLVER LOCAL (FULL TOC DO - KHONG GIOI HAN RENDER)
 echo ====================================================================
 echo Dang khoi dong server va duong dan cong khai cho dien thoai...
+set "AUTO_TUNNEL=true"
 node server.js
 pause

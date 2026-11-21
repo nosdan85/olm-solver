@@ -1,28 +1,36 @@
 'use strict';
 
-const https = require('https');
+const https = require('node:https');
+const http = require('node:http');
+const { createHash } = require('node:crypto');
+const logger = require('./logger');
+const { setTimeout: delay } = require('node:timers/promises');
 
 // Cache providers that hit permanent errors (401 invalid key, 404, or 429 daily quota)
 // so subsequent questions don't waste 20-30s retrying dead providers.
 const disabledProviders = new Map();
 
-function disableProvider(provider, reason) {
-  if (!provider) return;
-  const key = `${provider.baseUrl}::${provider.model}`;
-  disabledProviders.set(key, { at: Date.now(), reason });
-  console.log(`[answer-engine] Tạm ngưng provider "${provider.model}" (${provider.baseUrl}): ${reason}`);
+function accountKey(provider) {
+  const credential = createHash('sha256').update(provider.apiKey || '').digest('hex');
+  return JSON.stringify([provider.baseUrl, credential]);
+}
+
+function disableProvider(provider, reason, accountWide = false) {
+  const key = accountWide ? accountKey(provider) : JSON.stringify([accountKey(provider), provider.model]);
+  disabledProviders.set(key, Date.now());
+  logger.originalConsole.warn('[answer-engine] Tạm ngưng model ' + provider.model + ' (' + reason + ')');
+  logger.broadcast({ level: 'warn', message: 'Kênh AI tạm gián đoạn.' });
 }
 
 function isProviderDisabled(provider) {
-  const key = `${provider.baseUrl}::${provider.model}`;
-  const info = disabledProviders.get(key);
-  if (!info) return false;
-  // Re-check after 20 minutes
-  if (Date.now() - info.at > 20 * 60 * 1000) {
+  const account = accountKey(provider);
+  return [account, JSON.stringify([account, provider.model])].some(key => {
+    const since = disabledProviders.get(key);
+    if (since === undefined) return false;
+    if (Date.now() - since <= 20 * 60 * 1000) return true;
     disabledProviders.delete(key);
     return false;
-  }
-  return true;
+  });
 }
 
 // A provider is a (baseUrl, model, apiKey) triple. The first entry is primary;
@@ -73,15 +81,6 @@ function currentModel() {
   return providers()[0]?.model || process.env.OPENAI_MODEL || 'gemini-3.8-flash';
 }
 
-// True when the configured base URL points at OpenAI itself rather than an
-// OpenAI-compatible gateway (Gemini, Groq, OpenRouter...). The GPT-5/6 series
-// needs a different payload shape than the Gemini OpenAI-compat endpoint.
-// opencode zen proxies OpenAI models, so it needs the same payload shape.
-function isOpenAiProvider(baseUrl) {
-  const base = (baseUrl || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').toLowerCase();
-  return base.includes('api.openai.com') || base.includes('opencode.ai') || base.includes('digishop.work');
-}
-
 // Some gateways (e.g. opencode zen) expect the key in an 'x-api-key' header
 // instead of 'Authorization: Bearer'.
 function authHeaders(provider) {
@@ -124,7 +123,7 @@ function buildPayload(userMessageContent, provider) {
     const effort = process.env.OPENAI_REASONING_EFFORT;
     payload.effort = !effort || effort === 'none' ? 'low' : effort;
     payload.max_tokens = Number(process.env.OPENAI_MAX_TOKENS) || 4096;
-  } else if (isReasoningModel(p.model) || isOpenAiProvider(p.baseUrl)) {
+  } else if (isReasoningModel(p.model)) {
     payload.reasoning_effort = reasoningEffort();
     if (process.env.OPENAI_JSON_MODE !== '0') {
       payload.response_format = { type: 'json_object' };
@@ -139,12 +138,14 @@ function buildPayload(userMessageContent, provider) {
   return payload;
 }
 
-function callAi(payload, { timeoutMs = 60000, provider } = {}) {
+function callAi(payload, { timeoutMs = 60000, provider, signal } = {}) {
   const p = provider || providers()[0];
   return new Promise((resolve, reject) => {
     const fullUrl = new URL(`${p.baseUrl}/chat/completions`);
     const data = JSON.stringify(payload);
-    const req = https.request(fullUrl, {
+    const transport = fullUrl.protocol === 'https:' ? https : fullUrl.protocol === 'http:' ? http : null;
+    if (!transport) { reject(new Error('AI endpoint must use HTTP or HTTPS')); return; }
+    const req = transport.request(fullUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -152,6 +153,7 @@ function callAi(payload, { timeoutMs = 60000, provider } = {}) {
         ...authHeaders(p),
       },
       timeout: timeoutMs,
+      signal,
     }, (res) => {
       let body = '';
       res.on('data', (chunk) => body += chunk);
@@ -191,8 +193,63 @@ function callAi(payload, { timeoutMs = 60000, provider } = {}) {
   });
 }
 
+function parseStatement(value) {
+  if (typeof value === 'boolean') return value;
+  const raw = value && typeof value === 'object' ? value.isTrue ?? value.answer : value;
+  if (typeof raw === 'boolean') return raw;
+  const text = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (['true', 'đúng', 'dung', 't'].includes(text)) return true;
+  if (['false', 'sai', 'f'].includes(text)) return false;
+  return undefined;
+}
+
+function parseIndices(values, count) {
+  const indices = values.map((value) => {
+    if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value.trim()))) {
+      throw new Error('Invalid answer index');
+    }
+    const index = Number(value);
+    if (!Number.isInteger(index) || index < 0 || index >= count) throw new Error('Invalid answer index ' + value);
+    return index;
+  });
+  return [...new Set(indices)];
+}
+
+function shortValue(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  const text = String(value).trim();
+  return /^(?:không xác định|không đủ dữ kiện|không đọc được|unknown|n\/a)[.!]?$/i.test(text) ? '' : text;
+}
+
+function dropdownIndex(index, answer, options = []) {
+  const explicit = normalizeIndex(index, options.length);
+  if (explicit >= 0) return explicit;
+  const text = shortValue(answer).normalize('NFC');
+  if (!text) return -1;
+  const labels = options.map(option => String(option).trim().normalize('NFC'));
+  const exact = labels.indexOf(text);
+  if (exact >= 0) return exact;
+  const matches = labels.map((label, i) => label.toLowerCase() === text.toLowerCase() ? i : -1).filter(i => i >= 0);
+  return matches.length === 1 ? matches[0] : -1;
+}
+
+function shortAnswer(parsed, question) {
+  const fields = parsed.fillAnswers ?? parsed.answers;
+  const answer = shortValue(parsed.answer);
+  const fillAnswers = Array.isArray(fields) ? fields.map(shortValue) : [answer];
+  const expected = question.blankCount || 1;
+  const unresolved = fillAnswers.length !== expected || fillAnswers.some(value => !value);
+  return {
+    correctIndex: -1,
+    answer: unresolved ? '' : fillAnswers[0],
+    fillAnswers: unresolved ? [] : fillAnswers,
+    unresolved,
+    reason: unresolved ? 'missing-short-answer' : undefined,
+  };
+}
+
 // Ask the model to solve one question (supports Vision screenshot, True/False, Short Answer, Choice).
-async function solveQuestion(question, { retries = 1, onLog } = {}) {
+async function solveQuestion(question, { retries = 1, onLog, signal } = {}) {
   if (!hasKey()) {
     const err = new Error('OPENAI_API_KEY is not set on the server');
     err.code = 'NO_API_KEY';
@@ -211,15 +268,18 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
 
   // Build message content (text or multimodal with image_url)
   let userMessageContent = prompt;
-  if (question.imageBase64) {
+  const images = question.images || (question.imageBase64
+    ? [{ type: question.imageMimeType || 'image/jpeg', base64: question.imageBase64 }] : []);
+  const canUseText = !question.images?.length && question.hasImage === false && (question.text || '').trim().length >= 5;
+  if (images.length) {
     userMessageContent = [
       { type: 'text', text: prompt },
-      {
+      ...images.map(({ type, base64 }) => ({
         type: 'image_url',
         image_url: {
-          url: `data:image/jpeg;base64,${question.imageBase64}`,
+          url: `data:${type};base64,${base64}`,
         },
-      },
+      })),
     ];
   }
 
@@ -227,14 +287,20 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
   // permanently disable it for this run and move on immediately.
   for (let pi = 0; pi < allProviders.length; pi++) {
     const provider = allProviders[pi];
+    if (isProviderDisabled(provider)) continue;
     const isLastProvider = pi === allProviders.length - 1;
+    let contentForProvider = userMessageContent;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      signal?.throwIfAborted();
       try {
-        const res = await callAi(
-          buildPayload(userMessageContent, provider),
-          { timeoutMs: question.imageBase64 ? 45000 : 30000, provider }
-        );
+        const res = await callAi(buildPayload(contentForProvider, provider), {
+          timeoutMs: images.length ? 45000 : 30000, provider, signal,
+        }).catch(err => {
+          if (!canUseText || !Array.isArray(contentForProvider) || ![400, 415, 422].includes(err.status)) throw err;
+          contentForProvider = buildPrompt({ ...question, imageBase64: null });
+          return callAi(buildPayload(contentForProvider, provider), { timeoutMs: 30000, provider, signal });
+        });
 
         const content = res?.choices?.[0]?.message?.content;
         if (!content) throw new Error('Empty model response');
@@ -243,18 +309,14 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
         const options = question.options || [];
         let correctIndex = -1;
 
+        if (['short_answer', 'strict_short_answer', 'fill_me'].includes(question.type)) {
+          return { ...shortAnswer(parsed, question), kind: question.type, explanation: parsed.explanation || '', model: provider.model };
+        }
+
         if (question.type === 'true_false' || (Array.isArray(question.statements) && question.statements.length > 0)) {
-          // Parse array of booleans for True/False statements
-          let statements = [];
-          if (Array.isArray(parsed.statements)) {
-            statements = parsed.statements.map(s => {
-              if (typeof s === 'boolean') return s;
-              if (typeof s === 'object' && s !== null) return Boolean(s.isTrue ?? s.answer ?? true);
-              return String(s).toLowerCase().startsWith('đ') || String(s).toLowerCase().startsWith('t');
-            });
-          }
+          const statements = Array.isArray(parsed.statements) ? parsed.statements.map(parseStatement) : [];
           const expected = (question.statements || []).length;
-          const resolved = statements.length >= expected && expected > 0;
+          const resolved = expected > 0 && statements.length === expected && statements.every((value) => value !== undefined);
           return {
             statements: resolved ? statements : undefined,
             answer: parsed.answer || '',
@@ -270,9 +332,9 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
         if (question.type === 'multi_choice') {
           let correctIndices = [];
           if (Array.isArray(parsed.correctIndices)) {
-            correctIndices = parsed.correctIndices.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < options.length);
-          } else if (Number.isInteger(parsed.correctIndex)) {
-            correctIndices = [parsed.correctIndex];
+            correctIndices = parseIndices(parsed.correctIndices, options.length);
+          } else if (parsed.correctIndex != null) {
+            correctIndices = parseIndices([parsed.correctIndex], options.length);
           }
           if (!correctIndices.length && parsed.answer) {
             const byText = matchOptionIndex(parsed.answer, options);
@@ -292,13 +354,7 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
 
         // --- Các dạng câu hỏi mới ---
         if (question.type === 'dropdown') {
-          const idx = normalizeIndex(parsed.correctIndex ?? parsed.answer, options.length);
-          if (idx < 0 && parsed.answer) {
-            const byText = matchOptionIndex(parsed.answer, options);
-            if (byText >= 0) correctIndex = byText;
-          } else if (idx >= 0) {
-            correctIndex = idx;
-          }
+          correctIndex = dropdownIndex(parsed.correctIndex, parsed.answer, options);
           return {
             correctIndex,
             answer: correctIndex >= 0 ? (options[correctIndex] || parsed.answer || '') : (parsed.answer || ''),
@@ -414,17 +470,18 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
           raw: content,
         };
       } catch (err) {
+        signal?.throwIfAborted();
         lastErr = err;
         const status = err.status || err.response?.status;
         // Quota/rate-limit (429) is worth retrying unless daily quota exhausted.
-        if (status && status >= 400 && status < 500 && status !== 429) {
-          disableProvider(provider, `HTTP ${status}: ${err.message}`);
+        if ([401, 403, 404].includes(status)) {
+          disableProvider(provider, 'HTTP ' + status, status !== 404);
           if (onLog) onLog('warn', `⚠️ Kênh chính gián đoạn (${err.message}), chuyển sang kênh dự phòng...`);
           break;
         }
-        if (status === 429 && /quota.*(day|per day)|exceeded your current quota/i.test(err.message || '')) {
+        if (status === 429 && /quota.*(day|per day)|exceeded your current quota|insufficient_quota|billing limit/i.test(err.message || '')) {
           err.quotaExhausted = true;
-          disableProvider(provider, `Hết quota ngày: ${err.message}`);
+          disableProvider(provider, 'Hết hạn mức', /account|billing|insufficient_quota|project|organization/i.test(err.message));
           if (onLog) onLog('warn', `⚠️ Kênh chính đạt giới hạn. Đang chuyển sang kênh dự phòng...`);
           break;
         }
@@ -448,7 +505,7 @@ async function solveQuestion(question, { retries = 1, onLog } = {}) {
 function buildPrompt(question) {
   const options = question.options || [];
   const lines = [];
-  const hasImage = !!question.imageBase64;
+  const hasImage = Boolean(question.imageBase64 || question.images?.length);
   lines.push(`Môn học: ${question.subject || 'Toán/Lý/Hóa/Sinh/Sử/Địa/Văn'}`);
   // Chỉ trỏ tới ảnh khi ảnh thực sự được đính kèm. Trước đây dòng này luôn
   // ghi "(Xem nội dung trong hình ảnh...)" kể cả khi không có ảnh, khiến model
@@ -461,6 +518,10 @@ function buildPrompt(question) {
 
   if (hasImage) {
     lines.push('(Lưu ý: Câu hỏi, sơ đồ hoặc công thức nằm trong ảnh chụp màn hình kèm theo. Hãy quan sát kỹ ảnh, đọc đúng số liệu và công thức trước khi giải.)');
+  }
+  if (['short_answer', 'strict_short_answer', 'fill_me'].includes(question.type)) {
+    lines.push(`Trả về JSON {"fillAnswers":["giá trị cần nhập"]} với đúng ${question.blankCount || 1} phần tử theo thứ tự ô nhập. Giữ nguyên dấu, phân số, công thức, đơn vị được yêu cầu. Không viết lời giải vào ô đáp án.`);
+    return lines.join('\n');
   }
 
   if (question.type === 'true_false' || (question.statements && question.statements.length > 0)) {
@@ -570,7 +631,7 @@ function buildPrompt(question) {
     lines.push('4. Điền vào "answer" nội dung đáp án đã chọn.');
     lines.push(
       'Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng: ' +
-        '{"explanation": "<suy luận phân tích loại trừ ngắn>", "correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<nội dung đáp án đúng>"}'
+        '{"correctIndex": <số thứ tự đáp án đúng từ 0 đến ' + (options.length - 1) + '>, "answer": "<nội dung đáp án đúng>"}'
     );
   } else {
     lines.push('');
@@ -670,6 +731,8 @@ function buildBatchPrompt(questions) {
       lines.push('-> Trả về "correctIndices": [<các chỉ số từ đúng>].');
     } else if (q.type === 'essay') {
       lines.push('Dạng tự luận - viết lời giải chi tiết vào "answer".');
+    } else if (['short_answer', 'strict_short_answer', 'fill_me'].includes(q.type)) {
+      lines.push(`Trả về "fillAnswers" gồm đúng ${q.blankCount || 1} chuỗi theo thứ tự các ô. Chỉ ghi nội dung cần nhập.`);
     } else if (Array.isArray(q.options) && q.options.length) {
       lines.push('Danh sách 4 đáp án lựa chọn:');
       q.options.forEach((o, i) => lines.push(`  [${i}] ${o}`));
@@ -702,17 +765,14 @@ function validateBatchAnswers(parsed, questions) {
       statements: undefined,
       explanation: item.explanation || '',
     };
-    if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
+    if (['short_answer', 'strict_short_answer', 'fill_me'].includes(q.type)) {
+      Object.assign(result, shortAnswer(item, q));
+    } else if (q.type === 'true_false' || (Array.isArray(q.statements) && q.statements.length > 0)) {
       // Chỉ dạng Đúng/Sai mới dùng "statements". Các dạng khác bỏ qua để
       // tránh rò rỉ mảng boolean không liên quan.
-      result.statements = Array.isArray(item.statements) ? item.statements.map((value) => {
-        if (typeof value === 'boolean') return value;
-        if (typeof value === 'object' && value !== null) return Boolean(value.isTrue ?? value.answer);
-        const text = String(value).toLowerCase();
-        return text.startsWith('đ') || text.startsWith('t') || text === 'true';
-      }) : undefined;
+      result.statements = Array.isArray(item.statements) ? item.statements.map(parseStatement) : [];
       const expected = (q.statements || []).length;
-      if (!Array.isArray(result.statements) || result.statements.length < expected || expected === 0) {
+      if (expected === 0 || result.statements.length !== expected || result.statements.some((value) => value === undefined)) {
         // Không được đoán "toàn bộ Đúng" khi model không trả về mệnh đề.
         // Báo lỗi để batch được thử lại (cuối cùng fallback sang giải từng câu).
         throw new Error(`Missing true/false statements for ${id}`);
@@ -720,15 +780,9 @@ function validateBatchAnswers(parsed, questions) {
     } else if (q.type === 'multi_choice') {
       let correctIndices = [];
       if (Array.isArray(item.correctIndices)) {
-        correctIndices = item.correctIndices.map(Number);
-        const bad = correctIndices.find((n) => !Number.isInteger(n) || n < 0 || n >= (q.options || []).length);
-        if (bad !== undefined) throw new Error(`Invalid answer index ${bad} for ${id}`);
-      } else if (item.correctIndex !== undefined && item.correctIndex !== null) {
-        const n = Number(item.correctIndex);
-        if (!Number.isInteger(n) || n < 0 || n >= (q.options || []).length) {
-          throw new Error(`Invalid answer index ${item.correctIndex} for ${id}`);
-        }
-        correctIndices = [n];
+        correctIndices = parseIndices(item.correctIndices, (q.options || []).length);
+      } else if (item.correctIndex != null) {
+        correctIndices = parseIndices([item.correctIndex], (q.options || []).length);
       }
       if (!correctIndices.length && item.answer) {
         // Thử khớp theo nội dung đáp án khi model không đưa chỉ số.
@@ -746,6 +800,12 @@ function validateBatchAnswers(parsed, questions) {
         result.unresolved = true;
         result.reason = 'no-correct-indices';
       }
+    } else if (q.type === 'dropdown') {
+      const index = dropdownIndex(item.correctIndex, item.answer, q.options);
+      result.correctIndex = index;
+      result.answer = index >= 0 ? q.options[index] : '';
+      result.unresolved = index < 0;
+      if (result.unresolved) result.reason = 'dropdown-unmatched';
     } else if (Array.isArray(q.options) && q.options.length) {
       // --- Sửa lỗi: index và nội dung answer phải khớp nhau ---
       // Trước đây khi model trả correctIndex sai (vd 9) code reset về 0 nhưng
@@ -784,18 +844,9 @@ function validateBatchAnswers(parsed, questions) {
       } else {
         result.answer = q.options[chosen] || result.answer || '';
       }
-    } else if (['dropdown', 'drag_drop', 'grouping', 'matching', 'hotspot', 'essay', 'word_select', 'underline'].includes(q.type)) {
+    } else if (['drag_drop', 'grouping', 'matching', 'hotspot', 'essay', 'word_select', 'underline'].includes(q.type)) {
       // Các dạng mới: giữ nguyên dữ liệu model trả về, chỉ chuẩn hoá.
-      if (q.type === 'dropdown') {
-        const idx = normalizeIndex(item.correctIndex ?? item.answer, q.options.length);
-        if (idx >= 0) {
-          result.correctIndex = idx;
-          result.answer = q.options[idx] || result.answer || '';
-        } else {
-          result.unresolved = true;
-          result.reason = 'dropdown-unmatched';
-        }
-      } else if (q.type === 'matching') {
+      if (q.type === 'matching') {
         result.pairs = Array.isArray(item.pairs) ? item.pairs : [];
         if (!result.pairs.length) { result.unresolved = true; result.reason = 'missing-pairs'; }
       } else if (q.type === 'drag_drop' || q.type === 'grouping') {
@@ -823,7 +874,7 @@ function validateBatchAnswers(parsed, questions) {
   return answers;
 }
 
-async function solveBatch(questions, { retries = 1 } = {}) {
+async function solveBatch(questions, { retries = 1, signal } = {}) {
   if (!questions.length) return [];
   if (!hasKey()) {
     const err = new Error('AI key is not set on the server');
@@ -833,25 +884,42 @@ async function solveBatch(questions, { retries = 1 } = {}) {
   const prompt = buildBatchPrompt(questions);
   let lastErr;
   for (const provider of providers()) {
+    if (isProviderDisabled(provider)) continue;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      signal?.throwIfAborted();
       try {
-        const response = await callAi(buildPayload(prompt, provider), { timeoutMs: 60000, provider });
+        const response = await callAi(buildPayload(prompt, provider), { timeoutMs: 60000, provider, signal });
         const content = response?.choices?.[0]?.message?.content;
         if (!content) throw new Error('Empty batch model response');
-        return validateBatchAnswers(parseModelJson(content), questions)
-          .map((answer) => ({ ...answer, model: provider.model, raw: content }));
+        const { answers } = parseModelJson(content);
+        if (!Array.isArray(answers)) throw new Error('Batch response must contain an answers array');
+        const entries = new Map();
+        for (const item of answers) {
+          const id = String(item?.id ?? '');
+          entries.set(id, entries.has(id) ? null : item);
+        }
+        return questions.map(question => {
+          const item = entries.get(String(question.id));
+          try {
+            const [answer] = validateBatchAnswers({ answers: item ? [item] : [] }, [question]);
+            return { ...answer, model: provider.model };
+          } catch {
+            return { id: String(question.id), unresolved: true, reason: 'invalid-batch-answer' };
+          }
+        });
       } catch (err) {
+        signal?.throwIfAborted();
         lastErr = err;
         const status = err.status || err.response?.status;
-        if (status && status >= 400 && status < 500 && status !== 429) {
-          disableProvider(provider, `HTTP ${status}: ${err.message}`);
+        if ([401, 403, 404].includes(status)) {
+          disableProvider(provider, 'HTTP ' + status, status !== 404);
           break;
         }
-        if (status === 429 && /quota.*(day|per day)|exceeded your current quota/i.test(err.message || '')) {
-          disableProvider(provider, `Hết quota ngày: ${err.message}`);
+        if (status === 429 && /quota.*(day|per day)|exceeded your current quota|insufficient_quota|billing limit/i.test(err.message || '')) {
+          disableProvider(provider, 'Hết hạn mức', /account|billing|insufficient_quota|project|organization/i.test(err.message));
           break;
         }
-        if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (attempt < retries) await delay(1000, undefined, { signal });
       }
     }
   }
@@ -866,14 +934,19 @@ function matchOptionIndex(answerText, options) {
   if (!cleanAns) return -1;
 
   // Bỏ tiền tố nhãn đáp án ở cả hai vế để so khớp công bằng.
-  const stripLabel = (s) =>
-    String(s).trim().replace(/^(?:[A-D\d][\.\)\:\-]\s*|\([A-D\d]\)\s*|\[[A-D\d]\]\s*)/i, '').trim().toLowerCase();
+  const stripLabel = (s) => String(s).trim()
+    .replace(/^(?:[A-D][.):]|\([A-D]\))\s+/i, '')
+    .replace(/\$|\\(?:left|right)\b/g, '')
+    .replace(/[−–]/g, '-')
+    .replace(/\s+/g, '')
+    .toLowerCase();
 
   const ansBody = stripLabel(cleanAns);
 
   // 1. Khớp chính xác (đã bỏ nhãn)
-  let idx = options.findIndex((o) => stripLabel(o) === ansBody);
-  if (idx >= 0) return idx;
+  const exact = options.map(stripLabel).flatMap((option, index) => option === ansBody ? [index] : []);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return -1;
 
   // 2. Model trả về đúng một chữ cái (A/B/C/D) -> ánh xạ theo vị trí
   const letterMatch = cleanAns.match(/^(?:đáp án|phương án|lựa chọn|chọn)?\s*[\(\[]?\s*([a-dA-D])\s*[\)\]\.\:]?$/i);
@@ -884,12 +957,11 @@ function matchOptionIndex(answerText, options) {
 
   // 3. Khớp chuỗi con (chỉ khi đủ dài để tránh trùng số/ chữ cái đơn lẻ)
   if (ansBody.length >= 4) {
-    idx = options.findIndex((o) => {
+    const matches = options.flatMap((o, index) => {
       const ob = stripLabel(o);
-      if (!ob) return false;
-      return ob.includes(ansBody) || ansBody.includes(ob);
+      return ob.length >= 4 && (ob.includes(ansBody) || ansBody.includes(ob)) ? [index] : [];
     });
-    if (idx >= 0) return idx;
+    if (matches.length === 1) return matches[0];
   }
 
   return -1;
@@ -916,18 +988,20 @@ function normalizeIndex(value, count) {
 }
 
 // Solve a batch of questions with a small gap between calls.
-async function solveAll(questions, { onProgress, gapMs = 800 } = {}) {
+async function solveAll(questions, { onProgress, gapMs = 800, signal } = {}) {
   const results = [];
   for (let i = 0; i < questions.length; i++) {
+    signal?.throwIfAborted();
     const q = questions[i];
     if (onProgress) onProgress(i, questions.length, q);
     try {
-      const solved = await solveQuestion(q);
+      const solved = await solveQuestion(q, { signal });
       results.push({ index: i, ok: true, ...solved });
     } catch (err) {
+      signal?.throwIfAborted();
       results.push({ index: i, ok: false, error: err.message, correctIndex: -1, answer: '' });
     }
-    if (i < questions.length - 1) await new Promise((r) => setTimeout(r, gapMs));
+    if (i < questions.length - 1) await delay(gapMs, undefined, { signal });
   }
   return results;
 }
@@ -938,7 +1012,6 @@ module.exports = {
   hasKey,
   apiKey,
   currentModel,
-  isOpenAiProvider,
   reasoningEffort,
   buildPayload,
   providers,
@@ -948,4 +1021,7 @@ module.exports = {
   buildPrompt,
   normalizeIndex,
   matchOptionIndex,
+  callAi,
+  parseModelJson,
+  isProviderDisabled,
 };

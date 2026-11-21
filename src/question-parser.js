@@ -1,97 +1,62 @@
 'use strict';
 
 const cheerio = require('cheerio');
+const { normalizeMathStructureInCheerio } = require('./science-normalizer');
 
 // Parse a homework page into a list of questions with their options.
 // The markup changes over time, so we try several known shapes and fall back
 // to a generic "find radio/checkbox groups" scan.
 function parseQuestions(html, { url = '' } = {}) {
   const $ = cheerio.load(html);
+  normalizeMathStructureInCheerio($);
   const questions = [];
-  const seen = new Set();
-
-  const QUESTION_SELECTORS = [
-    '.question-item',
-    '.question',
-    '.quiz-question',
-    '.exercise-question',
-    '.item-question',
-    '[data-question-id]',
-    'fieldset',
-    '.cau-hoi',
-    '.question-wrapper',
-  ];
-
-  for (const sel of QUESTION_SELECTORS) {
-    const nodes = $(sel);
-    if (nodes.length === 0) continue;
-    nodes.each((_, node) => {
-      const q = extractQuestion($, node, url);
-      if (!q) return;
-      const key = `${q.text}::${q.options.join('|')}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      questions.push(q);
-    });
-    if (questions.length > 0) break;
+  const selector = '.question-item, .question, .quiz-question, .exercise-question, .item-question, [data-question-id], fieldset, .cau-hoi, .question-wrapper';
+  for (const node of $(selector).toArray()) {
+    if ($(node).find(selector).length) continue;
+    questions.push(...extractQuestion($, node, url));
   }
-
-  if (questions.length === 0) {
-    // Generic: group radios/checkboxes by their closest container.
-    $('input[type=radio], input[type=checkbox]').each((_, input) => {
-      const $input = $(input);
-      const name = $input.attr('name');
-      if (!name) return;
-      const $container = $input.closest('.question, .question-item, li, form, div').first();
-      const text = extractText($, $container);
-      if (!text) return;
-      const key = `radio:${name}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      const options = [];
-      $(`input[name="${cssEscape(name)}"]`).each((__, o) => {
-        const label = extractLabelFor($, $(o));
-        if (label) options.push(label);
-      });
-      questions.push({
-        id: name,
-        text,
-        options,
-        type: $input.attr('type') || 'radio',
-        name,
-        url,
-      });
+  if (!questions.length) {
+    const forms = new Set();
+    $(CHOICE_INPUTS).each((_, input) => {
+      if (!$(input).attr('name')) return;
+      forms.add($(input).closest('form')[0] || $('body')[0]);
     });
+    for (const form of forms) questions.push(...extractQuestion($, form, url));
   }
 
   return questions;
 }
 
+const CHOICE_INPUTS = 'input[type=radio][name]:enabled, input[type=checkbox][name]:enabled';
+
 function extractQuestion($, node, url) {
   const $node = $(node);
-  const text = extractText($, $node);
-  if (!text) return null;
-
+  const imageSources = $node.find('img:not(.icon):not(.emoji)').map((_, image) =>
+    $(image).attr('data-src') || $(image).attr('src')).get().filter(Boolean);
+  const needsBrowser = $node.find('canvas, svg').length > 0;
+  const text = extractText($, $node) || (imageSources.length || needsBrowser ? '[Đề bài có hình]' : '');
   const options = [];
-  const type = 'radio';
-
-  // Options can be radios/checkboxes or plain clickable divs.
-  const $inputs = $node.find('input[type=radio], input[type=checkbox]');
-  if ($inputs.length > 0) {
-    const name = $inputs.first().attr('name');
-    $inputs.each((_, input) => {
-      const label = extractLabelFor($, $(input));
-      if (label) options.push(label);
+  const groups = new Map();
+  $node.find(CHOICE_INPUTS).each((_, node) => {
+    const name = $(node).attr('name');
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(node);
+  });
+  if (groups.size) {
+    return Array.from(groups, ([name, inputs]) => {
+      const groupStem = $(inputs[0]).closest('fieldset, .question, .cau-hoi, [data-question-id]');
+      return {
+        id: groups.size === 1 ? ($node.attr('data-question-id') || $node.attr('id') || name) : name,
+        text: (groupStem.length ? extractText($, groupStem) : '') || text,
+        options: inputs.map((input, index) => extractLabelFor($, $(input)) || '[Phương án ' + (index + 1) + ']'),
+        imageSources, needsBrowser,
+        optionValues: inputs.map(input => $(input).attr('value') ?? 'on'),
+        type: $(inputs[0]).attr('type') === 'checkbox' ? 'multi_choice' : 'radio',
+        name, url,
+      };
     });
-    return {
-      id: $node.attr('data-question-id') || $node.attr('id') || name || `q${Math.random().toString(36).slice(2, 8)}`,
-      text,
-      options,
-      type: $inputs.first().attr('type') || type,
-      name: name || null,
-      url,
-    };
   }
+  if (!text) return [];
 
   const OPTION_SELECTORS = [
     '.answer',
@@ -113,21 +78,27 @@ function extractQuestion($, node, url) {
     }
   }
 
-  return {
+  const textFields = $node.find('textarea[name], input[name]:not([type]), input[type=text][name], input[type=number][name]').filter(':enabled');
+  return [{
     id: $node.attr('data-question-id') || $node.attr('id') || `q${Math.random().toString(36).slice(2, 8)}`,
     text,
     options,
-    type,
-    name: null,
+    imageSources,
+    needsBrowser,
+    type: textFields.length ? 'short_answer' : 'radio',
+    name: textFields.first().attr('name') || null,
+    fieldNames: textFields.map((_, field) => $(field).attr('name')).get(),
+    blankCount: textFields.length,
     url,
-  };
+  }];
 }
 
 function extractText($, $node) {
   const $copy = $node.clone();
   $copy.find('.answer, .answer-item, .option, .option-item, .choice, .dap-an, img, svg, .explain').remove();
-  const raw = ($copy.text() || '').replace(/\s+/g, ' ').trim();
-  return raw.length > 2 ? raw : '';
+  $copy.find('label').filter((_, label) => $(label).find(CHOICE_INPUTS).length ||
+    $(label).attr('for') && $node.find(CHOICE_INPUTS).toArray().some(input => $(input).attr('id') === $(label).attr('for'))).remove();
+  return $copy.text().replace(/\s+/g, ' ').trim();
 }
 
 function extractLabelFor($, $input) {
@@ -144,12 +115,13 @@ function extractLabelFor($, $input) {
     const t = ($label.text() || '').trim();
     if (t) return t;
   }
-  const $wrap = $input.parent();
-  if ($wrap.length) {
-    const t = ($wrap.text() || '').trim();
-    if (t) return t;
+  const wrap = $input.parent();
+  if (wrap.is('.answer, .answer-item, .option, .option-item, .choice, .dap-an, li') &&
+      wrap.find(CHOICE_INPUTS).length === 1) {
+    const text = wrap.text().trim();
+    if (text) return text;
   }
-  return $input.attr('value') || '';
+  return $input.attr('aria-label') || $input.attr('value') || '';
 }
 
 // Minimal CSS attribute-selector escaping for ids containing quotes/specials.
@@ -166,15 +138,24 @@ function findSubmitInfo(html, baseUrl) {
 
   const form = $btn.closest('form');
   if (form.length) {
+    const fields = Object.create(null);
+    form.find('input[type=hidden][name]').each((_, el) => {
+      const input = $(el);
+      if (input.is(':disabled')) return;
+      const name = input.attr('name');
+      const value = input.attr('value') || '';
+      fields[name] = name in fields ? [].concat(fields[name], value) : value;
+    });
     const action = form.attr('action');
     return {
       action: action ? new URL(action, baseUrl).toString() : baseUrl,
       method: (form.attr('method') || 'post').toLowerCase(),
       formId: form.attr('id') || null,
+      fields,
     };
   }
 
-  return { action: baseUrl, method: 'post', formId: null };
+  return { action: null, method: 'post', formId: null, fields: {} };
 }
 
 module.exports = { parseQuestions, findSubmitInfo, cssEscape };

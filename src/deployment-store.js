@@ -6,12 +6,14 @@ const rules = require('./license-store');
 
 const configured = Boolean(process.env.DATABASE_URL);
 const MAX_POOL = integer(process.env.DB_POOL_SIZE, 10, 2, 40);
+const isLocalDb = !configured || /@(localhost|127\.0\.0\.1)(:|\/)/i.test(process.env.DATABASE_URL);
 const pool = configured ? new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: isLocalDb ? undefined : { rejectUnauthorized: false },
   max: MAX_POOL,
-  connectionTimeoutMillis: 2500,
+  connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
-  statement_timeout: 6000,
+  statement_timeout: 8000,
 }) : null;
 pool?.on('error', (error) => console.error('[postgres]', error.code || error.message));
 

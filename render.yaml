@@ -1,26 +1,18 @@
-databases:
-  - name: giaiolm-db
-    plan: basic-1gb
-    region: singapore
-    ipAllowList: []
-
 services:
   - type: web
     name: giaiolm-api
     runtime: docker
-    plan: starter
+    plan: free
     region: singapore
     branch: main
-    numInstances: 2
     healthCheckPath: /api/ready
-    # Uncomment after buying your custom domain:
+    # Sau này khi mua tên miền riêng, bỏ dấu # 2 dòng dưới và đổi thành tên miền của bạn:
     # domains:
     #   - api.giaiolm.com
     envVars:
+      # Dán Connection String miễn phí từ Neon.tech hoặc Supabase vào đây:
       - key: DATABASE_URL
-        fromDatabase:
-          name: giaiolm-db
-          property: connectionString
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_PASSWORD
@@ -37,52 +29,15 @@ services:
         value: "true"
       - key: TRUST_PROXY
         value: "1"
-      - key: DB_POOL_SIZE
-        value: "10"
-      - key: MAX_QUEUED_RUNS
-        value: "250"
-      - key: UPSTREAM_REQUEST_SLOTS
-        value: "12"
-
-  - type: worker
-    name: giaiolm-worker
-    runtime: docker
-    dockerCommand: node scripts/run-worker.js
-    plan: standard
-    region: singapore
-    branch: main
-    numInstances: 1
-    maxShutdownDelaySeconds: 30
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: giaiolm-db
-          property: connectionString
-      - key: SESSION_SECRET
-        fromService:
-          type: web
-          name: giaiolm-api
-          envVarKey: SESSION_SECRET
-      - key: OPENAI_API_KEY
-        fromService:
-          type: web
-          name: giaiolm-api
-          envVarKey: OPENAI_API_KEY
-      - key: OPENAI_BASE_URL
-        fromService:
-          type: web
-          name: giaiolm-api
-          envVarKey: OPENAI_BASE_URL
-      - key: OPENAI_MODEL
-        fromService:
-          type: web
-          name: giaiolm-api
-          envVarKey: OPENAI_MODEL
       - key: PUPPETEER_NO_SANDBOX
         value: "true"
       - key: WORKER_RUN_SLOTS
         value: "1"
       - key: WORKER_HOMEWORK_CONCURRENCY
-        value: "2"
+        value: "1"
       - key: DB_POOL_SIZE
-        value: "4"
+        value: "5"
+      - key: MAX_QUEUED_RUNS
+        value: "50"
+      - key: UPSTREAM_REQUEST_SLOTS
+        value: "6"

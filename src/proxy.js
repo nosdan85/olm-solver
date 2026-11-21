@@ -31,7 +31,7 @@ function loadStoredProxy() {
 runtimeProxy = loadStoredProxy();
 
 function getRuntimeProxy() {
-  if (sharedProxy !== undefined) return sharedProxy;
+  if (sharedProxy) return sharedProxy;
   return runtimeProxy || loadStoredProxy();
 }
 

@@ -629,6 +629,8 @@
         meta.append(el('span', { class: 'tag ok', text: scoreTxt }));
       } else if (isExpired) {
         meta.append(el('span', { class: 'tag err', text: '✕ Hết hạn' }));
+      } else if (hw.status && hw.status.startsWith('Đang làm dở')) {
+        meta.append(el('span', { class: 'tag warn', text: `◐ ${hw.status}` }));
       } else {
         meta.append(el('span', { class: 'tag warn', text: '● Chưa làm' }));
       }

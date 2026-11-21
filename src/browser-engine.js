@@ -4090,7 +4090,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal,
       if (!chipBox.isSelected) {
         await page.mouse.click(chipBox.x, chipBox.y);
       }
-      await H.sleep(250);
+      await H.sleep(directAnswersList.length > 0 ? 120 : 250);
     }
 
     // 2. Quét nhanh nội dung câu hiện tại
@@ -4105,8 +4105,17 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal,
       log('info', '📋 [Câu ' + (index + 1) + '/' + total + '] Quét: "' + (qDesc || (question.hasImage ? 'Hình ảnh' : 'Trắc nghiệm')) + '"' + (optDesc ? ' [' + optDesc + ']' : ''));
     }
 
-    // 3. Tra cứu đáp án chính xác từ OLM Network API + Live DOM Web Components
-    let directAns = matchDirectAnswer(question, directAnswersList, directAnswersMap, index);
+    // 3. Tra cứu đáp án chính xác từ OLM Network API + URL idq + Live DOM Web Components
+    const urlIdq = await page.evaluate(() => {
+      const m = location.href.match(/idq=(\d+)/);
+      return m ? m[1] : null;
+    }).catch(() => null);
+    let directAns = (urlIdq && directAnswersMap.has(String(urlIdq)))
+      ? { ...directAnswersMap.get(String(urlIdq)) }
+      : null;
+    if (!directAns) {
+      directAns = matchDirectAnswer(question, directAnswersList, directAnswersMap, index);
+    }
     if (!directAns) {
       directAns = await extractLiveDomAnswer(page, index);
     }
@@ -4225,23 +4234,30 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal,
     });
     if (checkBtnBox) {
       await page.mouse.click(checkBtnBox.x, checkBtnBox.y);
-      await H.sleep(1000);
-    } else {
+      await H.sleep(directAnswersList.length > 0 ? 200 : 600);
+    }
+
+    // Bấm nút 'Tiếp tục' / #btn-next / .btn-next-question nếu có để chuyển câu mượt mà
+    const nextClicked = await page.evaluate(() => {
+      const btn = document.querySelector('#btn-next, .btn-next-question') ||
+        Array.from(document.querySelectorAll('button')).find(b => (b.offsetWidth > 0 || b.offsetHeight > 0) && !b.disabled && /^(tiếp tục|câu sau|câu tiếp|tiếp theo)$/i.test((b.innerText || '').trim()));
+      if (btn && (btn.offsetWidth > 0 || btn.offsetHeight > 0)) {
+        btn.click();
+        return true;
+      }
+      return false;
+    }).catch(() => false);
+
+    // Chỉ gọi Adaptive AI khi thực sự kẹt ở câu cuối mà không có cả nút Kiểm tra lẫn nút Tiếp tục;
+    // ở các câu giữa, vòng lặp kế tiếp đã tự click chip[index + 1].
+    if (!checkBtnBox && !nextClicked && index === total - 1) {
       try {
         const adaptive = require('./adaptive-solver');
         const aiNext = await adaptive.resolvePageLifecycleWithAI(page, { stage: 'next_question', log });
         if (aiNext.status === 'locked_result') break;
-        await H.sleep(800);
+        await H.sleep(300);
       } catch { /* ignore */ }
     }
-
-    // Bấm nút 'Tiếp tục' / #btn-next nếu có để chuyển câu mượt mà
-    await page.evaluate(() => {
-      const btn = document.querySelector('#btn-next') || Array.from(document.querySelectorAll('button')).find(b => /tiếp tục|câu sau|câu tiếp/i.test(b.innerText || ''));
-      if (btn && (btn.offsetWidth > 0 || btn.offsetHeight > 0)) {
-        btn.click();
-      }
-    }).catch(() => { });
 
     // Đồng bộ trạng thái Palette câu hỏi trên OLM
     await page.evaluate((idx) => {
@@ -4258,7 +4274,7 @@ async function solveModernQuiz(page, { homework, config = {}, log, emit, signal,
     if (log) log('info', 'Đã xử lý câu ' + (index + 1) + '/' + total + ' (' + elapsed + ' giây).');
 
     emit?.('fill-progress', { completed: index + 1, filled, failed, total });
-    await H.sleep(50);
+    if (!directAnswersList.length) await H.sleep(50);
   }
 
   emit?.('fill-complete', { filled, failed, total: questions.length });
@@ -5761,8 +5777,14 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       task.finally(() => pendingResponses.delete(task));
     });
     async function waitForAnswers() {
-      await page.waitForNetworkIdle({ idleTime: 300, timeout: 3500 }).catch(() => {});
-      await Promise.race([Promise.allSettled([...pendingResponses]), delay(2000, undefined, { ref: false })]);
+      if (directAnswersList.length > 0 && pendingResponses.size === 0) {
+        signal?.throwIfAborted();
+        return;
+      }
+      await page.waitForNetworkIdle({ idleTime: 250, timeout: 1500 }).catch(() => {});
+      if (pendingResponses.size > 0) {
+        await Promise.race([Promise.allSettled([...pendingResponses]), delay(1000, undefined, { ref: false })]);
+      }
       signal?.throwIfAborted();
     }
 
@@ -6010,7 +6032,7 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null);
         await page.mouse.click(confirmBox.x, confirmBox.y);
         await navPromise;
-        await H.sleep(1800);
+        await H.sleep(500);
       }
 
       // Kiểm tra xem OLM có từ chối làm lại bài không (ví dụ: "Bạn không có quyền xóa bài làm này!")
@@ -6037,15 +6059,15 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         const isPracticeActive = !!(document.querySelector('.tw-olm-chip-question, .item-q, .itemx, .card-body'));
         const hasModal = !!document.querySelector('.main-modal-v2:not(.tw-hidden), div[role=dialog]');
         return (hasQuiz || hasStart || hasCheckBtn || isPracticeActive) && !hasModal;
-      }, { timeout: 10000 }).catch(() => { });
-      await H.sleep(1000);
+      }, { timeout: 8000 }).catch(() => { });
+      await H.sleep(300);
     }
 
 
     // Helper: Tìm và nhấn nút "Bắt đầu làm bài" / "Làm bài" / "Vào thi" / "Tiếp tục" trên màn hình sảnh chờ
-    async function findAndClickStartButton() {
+    async function findAndClickStartButton(maxTries = 4) {
       let startBox = null;
-      for (let sTry = 0; sTry < 4; sTry++) {
+      for (let sTry = 0; sTry < maxTries; sTry++) {
         startBox = await page.evaluate(() => {
           const isVis = (el) => el && (el.offsetWidth > 0 || el.offsetHeight > 0);
           const startOverlay = document.querySelector('#exam-start-overlay:not(.tw-hidden), #btn-start-exam-overlay');
@@ -6282,7 +6304,9 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
         );
       });
 
-      await waitForAnswers();
+      if (attempt === 0 && (!directAnswersList.length || pendingResponses.size > 0)) {
+        await waitForAnswers();
+      }
       if (isExam && directAnswersList.length > 0) {
         mode = { mode: 'exam', reason: `Bài thi tuần tự nộp bài ở cuối, ${directAnswersList.length} câu` };
         break;
@@ -6290,7 +6314,10 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
 
       surface = await inspectQuestionSurface(page);
       mode = classifyMode(surface);
-      if (mode.mode !== 'unknown') break;
+      if (mode.mode !== 'unknown') {
+        if (!directAnswersList.length || pendingResponses.size > 0) await waitForAnswers();
+        break;
+      }
 
       const specialCheck = await page.evaluate(() => {
         if (window.VIDEO_UI_V2?.values || document.querySelector('[data-timeline-marker], .video-checkpoint')) {
@@ -6309,13 +6336,13 @@ async function solveHomework(browser, { homework, session, config = {}, log, emi
       }
 
       // Nếu không nhận diện được: Kiểm tra xem sảnh chờ có nút Bắt đầu / Làm bài chưa được bấm không
-      const clickedStart = await findAndClickStartButton();
+      const clickedStart = await findAndClickStartButton(1);
       if (clickedStart) {
-        await H.sleep(2000);
+        await H.sleep(1000);
         continue;
       }
 
-      await H.sleep(1000);
+      await H.sleep(400);
     }
 
     // Fallback thông minh qua Adaptive AI DevTools: Nếu sau 15 lần vẫn unknown, nhờ AI quét toàn bộ DevTools để xử lý

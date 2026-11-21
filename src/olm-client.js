@@ -312,22 +312,72 @@ class OlmClient {
           const subject = item.subject?.title || (item.group?.group_name ? `Lớp ${item.group.group_name}` : '');
 
           // Nhận diện trạng thái hoàn thành thực sự của bài tập:
-          // Một bài chỉ coi là ĐÃ XONG (isDone = true) khi:
-          // 1. OLM API xác nhận item.isDone === true, HOẶC
-          // 2. Có bản ghi nộp bài hoàn tất: item.record.ended === 1 HOẶC (item.record.date_end > 0 && item.record.totalq > 0)
-          // Nếu học sinh chỉ mới bấm vào bài (tạo user_history_id) hoặc mới làm dở một vài câu (ended === 0, date_end === 0)
-          // thì TUYỆT ĐỐI KHÔNG coi là đã làm, mà phải giữ nguyên ở danh sách "Chưa làm"!
+          // Một bài chỉ coi là ĐÃ XONG (isDone = true) khi OLM API xác nhận đã hoàn thành/nộp bài,
+          // hỗ trợ cả kiểu boolean, số (1/0), chuỗi ('1'/'true'), record dạng object hoặc array,
+          // date_end dạng timestamp hoặc chuỗi ngày, và percent/progress >= 100.
+          // Nếu học sinh chỉ mới bấm vào bài (tạo user_history_id) hoặc mới làm dở (ended === 0, date_end rỗng)
+          // thì KHÔNG coi là đã xong, mà đánh dấu "Đang làm dở".
+          const rec = Array.isArray(item.record)
+            ? item.record[0]
+            : (item.record && typeof item.record === 'object' ? item.record : null);
+          const isTruthyFlag = (v) => v === true || v === 1 || v === '1' || v === 'true';
+          const isExplicitFalse = (v) => v === false || v === 0 || v === '0' || v === 'false';
+          const hasValidDateEnd = (v) => {
+            if (v === null || v === undefined || v === '' || v === 0 || v === '0') return false;
+            if (typeof v === 'number') return v > 0;
+            const s = String(v).trim();
+            if (!s || /^0{4}-0{2}-0{2}/.test(s) || /^null$/i.test(s)) return false;
+            const n = Number(s);
+            if (!Number.isNaN(n)) return n > 0;
+            return !Number.isNaN(Date.parse(s));
+          };
+          const percentVal = Number(item.percent ?? item.progress ?? rec?.percent ?? rec?.progress ?? NaN);
+          const isFullPercent = !Number.isNaN(percentVal) && percentVal >= 100;
+          const rawScore = rec?.score_10 ?? rec?.score ?? item.score_10 ?? item.score ?? null;
+          const hasScore = rawScore !== null && rawScore !== undefined && rawScore !== '' && !Number.isNaN(Number(rawScore));
+          const rawItemStatus = String(
+            item.status_text || item.status_name || (typeof item.status === 'string' ? item.status : '') || ''
+          ).trim();
+          const hasDoneStatusText = /^(done|completed|finished|submitted|passed|đã\s*xong|hoàn\s*thành|đã\s*hoàn\s*thành|đã\s*làm|đã\s*nộp)$/i.test(rawItemStatus);
+          const recNotEndedFalse = !isExplicitFalse(rec?.ended);
+
           const isReallyDone = Boolean(
-            item.isDone === true ||
-            [1, '1', true].includes(item.record?.ended) ||
-            (item.record && Number(item.record.date_end) > 0 && Number(item.record.totalq) > 0)
+            isTruthyFlag(item.isDone) ||
+            isTruthyFlag(item.is_done) ||
+            isTruthyFlag(item.done) ||
+            isTruthyFlag(item.completed) ||
+            isTruthyFlag(item.complete) ||
+            isTruthyFlag(item.isCompleted) ||
+            isTruthyFlag(item.is_completed) ||
+            hasDoneStatusText ||
+            (rec && (
+              isTruthyFlag(rec.ended) ||
+              isTruthyFlag(rec.isDone) ||
+              isTruthyFlag(rec.is_done) ||
+              isTruthyFlag(rec.completed) ||
+              isTruthyFlag(rec.complete) ||
+              (recNotEndedFalse && hasValidDateEnd(rec.date_end)) ||
+              (recNotEndedFalse && isFullPercent) ||
+              (recNotEndedFalse && hasScore && (
+                isTruthyFlag(item.tried) ||
+                Number(item.tried) > 0 ||
+                Boolean(item.user_history_id) ||
+                Number(rec.time_do) > 0 ||
+                Number(rec.totalq) > 0 ||
+                (Number(rec.correct || 0) + Number(rec.wrong || 0)) > 0
+              ))
+            )) ||
+            (recNotEndedFalse && isFullPercent)
           );
 
           // Kiểm tra xem bài có đang làm dở không
           const isInProgress = !isReallyDone && Boolean(
-            [0, '0', false].includes(item.record?.ended) ||
+            isExplicitFalse(rec?.ended) ||
             item.user_history_id ||
-            (item.num_done && Number(item.num_done) > 0)
+            (item.num_done && Number(item.num_done) > 0) ||
+            (!Number.isNaN(percentVal) && percentVal > 0 && percentVal < 100) ||
+            isTruthyFlag(item.tried) ||
+            (item.tried && Number(item.tried) > 0)
           );
 
           const isDone = isReallyDone;
@@ -338,7 +388,7 @@ class OlmClient {
           const opts = (item.options && !Array.isArray(item.options) && typeof item.options === 'object') ? item.options : {};
           const optRedo = opts.redo !== undefined ? Number(opts.redo) : undefined;
           const optLimitRedo = opts.limit_redo !== undefined ? Number(opts.limit_redo) : 0;
-          const doneRedoCount = Number(item.record?.count_redo ?? item.record?.num_redo ?? (isDone ? 1 : 0));
+          const doneRedoCount = Number(rec?.count_redo ?? rec?.num_redo ?? (isDone ? 1 : 0));
           // Lưu ý: Trên OLM, limit_redo === 0 nghĩa là KHÔNG GIỚI HẠN số lần làm lại (khi redo === 1).
           // Còn limit_redo > 0 là giới hạn số lần làm tối đa.
           const hitRedoLimit = optLimitRedo > 0 && doneRedoCount >= optLimitRedo;
@@ -362,7 +412,7 @@ class OlmClient {
           } else if (item.isExpired) {
             status = 'Hết hạn';
           } else if (isInProgress) {
-            const doneQ = item.record?.correct !== undefined ? (item.record.correct + (item.record.wrong || 0)) : 0;
+            const doneQ = rec?.correct !== undefined ? (Number(rec.correct) + Number(rec.wrong || 0)) : (Number(item.num_done) || 0);
             status = doneQ > 0 ? `Đang làm dở (${doneQ} câu)` : 'Đang làm dở';
           }
           let categoryType = 'practice';
@@ -402,7 +452,7 @@ class OlmClient {
             isDone: isDone,
             isExpired: !!item.isExpired,
             canRetry,
-            score: item.record?.score_10 ?? item.record?.score ?? item.score ?? null,
+            score: rawScore,
           };
         });
 
@@ -536,7 +586,11 @@ function parseHomeworks(html, baseUrl) {
     if (!link || /\/social\/|\/dangnhap|\/login|\/auth\/|\/logout|\/quenmatkhau|\/register|redirect_url=/i.test(link)) return;
     const abs = link ? new URL(link, baseUrl).toString() : '';
 
-    const statusText = ($el.find('.status, .state, .badge, .label, .chip').first().text() || '').trim();
+    const statusText = $el.find('.status, .state, .badge, .label, .chip')
+      .map((_, s) => $(s).text().trim())
+      .get()
+      .filter(Boolean)
+      .join(' ');
     const deadlineText = ($el.find('.deadline, .due, .time, .expire, .han-deadline').first().text() || '').trim();
     const subject = ($el.find('.subject, .mon, .mon-hoc, .category').first().text() || '').trim();
 
@@ -548,7 +602,8 @@ function parseHomeworks(html, baseUrl) {
     seen.add(key);
 
     const fullText = $el.text();
-    const isDone = /đã\s*xong|hoàn\s*thành|đã\s*làm/i.test(statusText);
+    const isDone = /đã\s*xong|hoàn\s*thành|đã\s*làm|đã\s*nộp/i.test(statusText) ||
+      /đã\s*hoàn\s*thành|luyện\s*tập\s*lại|làm\s*lại\s*bài/i.test(fullText);
     const canRetry = isDone && /luyện\s*tập|làm\s*lại|thi\s*lại|luyentaplai/i.test(fullText);
 
     items.push({

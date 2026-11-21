@@ -21,6 +21,7 @@ const runner = require('./src/runner');
 runner.hookConsole();
 const H = require('./src/humanize');
 const tunnelManager = require('./src/tunnel');
+const { startWorkerLoop } = require('./scripts/run-worker');
 
 const app = express();
 app.disable('x-powered-by');
@@ -835,14 +836,27 @@ if (require.main === module) {
         runner.sweepRuns();
       }, 15 * 60 * 1000).unref();
     }
+    const runEmbeddedWorker = shared.configured
+      && process.env.EMBEDDED_WORKER !== 'false'
+      && process.env.RUN_EMBEDDED_WORKER !== 'false';
+    const embeddedWorker = runEmbeddedWorker ? await startWorkerLoop() : null;
+    embeddedWorker?.done.catch((error) => {
+      console.error('[embedded-worker]', error.message);
+    });
     const server = app.listen(PORT, HOST, () => {
       const openHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST === '::' ? '::1' : HOST;
       const urlHost = openHost.includes(':') ? `[${openHost}]` : openHost;
       console.log(`Mở web trên máy này tại http://${urlHost}:${server.address().port}`);
+      if (embeddedWorker) console.log('[embedded-worker] Worker loop started in-process.');
       if (!shared.configured && process.env.AUTO_TUNNEL === 'true') tunnelManager.start(PORT).catch(() => {});
     });
+    let shuttingDown = false;
     const shutdown = () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      embeddedWorker?.stop();
       server.close(async () => {
+        if (embeddedWorker) await embeddedWorker.done.catch(() => {});
         await shared.close();
         process.exit(0);
       });

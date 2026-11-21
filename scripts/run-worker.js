@@ -1,22 +1,13 @@
 'use strict';
 
-require('dotenv').config();
+if (require.main === module) require('dotenv').config();
 
 const { setTimeout: sleep } = require('node:timers/promises');
 const shared = require('../src/deployment-store');
 const runner = require('../src/runner');
 const { refreshSharedProxy } = require('../src/proxy');
 
-let stopping = false;
-const active = new Set();
-function stop() {
-  stopping = true;
-  for (const run of active) runner.stopRun(run.id);
-}
-process.once('SIGINT', stop);
-process.once('SIGTERM', stop);
-
-async function execute(job) {
+async function execute(job, state) {
   let run;
   try {
     await refreshSharedProxy();
@@ -27,7 +18,7 @@ async function execute(job) {
         !(await shared.licenses.verify({ ...license, olmUsername: session.username })).valid) {
       throw new Error('License hết hạn hoặc đã bị thu hồi trong lúc chờ.');
     }
-    if (stopping || await shared.jobs.heartbeat(job.id, { id: job.id, status: 'running', phase: 'starting', homeworks: [], logs: [] })) {
+    if (state.stopping || await shared.jobs.heartbeat(job.id, { id: job.id, status: 'running', phase: 'starting', homeworks: [], logs: [] })) {
       await shared.jobs.finish(job.id, { id: job.id, status: 'stopped', phase: 'stopped', homeworks: [], logs: [] });
       return;
     }
@@ -35,9 +26,9 @@ async function execute(job) {
     run = await runner.startRun({
       session, homeworks, config: { ...config, concurrency: Math.min(config.concurrency, perRun) }, sessionId: session.id, runId: job.id,
     });
-    active.add(run);
+    state.active.add(run);
     while (!run.finishedAt) {
-      if (stopping || await shared.jobs.heartbeat(job.id, shared.runSnapshot(run))) runner.stopRun(run.id);
+      if (state.stopping || await shared.jobs.heartbeat(job.id, shared.runSnapshot(run))) runner.stopRun(run.id);
       await sleep(2000);
     }
     await shared.jobs.finish(job.id, shared.runSnapshot(run));
@@ -51,36 +42,79 @@ async function execute(job) {
       status: 'error', phase: 'error', error: error.message,
     }).catch(() => {});
   } finally {
-    if (run) active.delete(run);
+    if (run) state.active.delete(run);
   }
 }
 
-async function worker() {
-  while (!stopping) {
+async function interruptibleSleep(ms, signal) {
+  if (signal.aborted) return;
+  try {
+    await sleep(ms, undefined, { signal });
+  } catch (error) {
+    if (error?.name !== 'AbortError') throw error;
+  }
+}
+
+async function worker(state) {
+  while (!state.stopping) {
     try {
       const job = await shared.jobs.claim();
-      if (job) await execute(job);
-      else await sleep(1000);
+      if (job) await execute(job, state);
+      else await interruptibleSleep(1000, state.abortController.signal);
     } catch (error) {
       console.error('[worker]', error.code || error.message);
-      await sleep(3000);
+      await interruptibleSleep(3000, state.abortController.signal);
     }
   }
 }
 
-async function main() {
+async function startWorkerLoop({ initStore = false, closeStore = false } = {}) {
   if (!shared.configured) throw new Error('DATABASE_URL is required for the worker.');
-  await shared.init();
+  if (initStore) await shared.init();
   await shared.jobs.sweep();
-  const interval = setInterval(() => shared.jobs.sweep().catch((error) => console.error('[worker sweep]', error.code)), 30000);
+
+  const state = {
+    stopping: false,
+    active: new Set(),
+    abortController: new AbortController(),
+  };
+
+  const stop = () => {
+    if (state.stopping) return;
+    state.stopping = true;
+    state.abortController.abort();
+    for (const run of state.active) runner.stopRun(run.id);
+  };
+
+  const interval = setInterval(
+    () => shared.jobs.sweep().catch((error) => console.error('[worker sweep]', error.code || error.message)),
+    30000
+  );
+  if (interval.unref) interval.unref();
+
   const slots = Math.min(4, Math.max(1, Math.trunc(Number(process.env.WORKER_RUN_SLOTS) || 1)));
-  try {
-    await Promise.all(Array.from({ length: slots }, () => worker()));
-  } finally {
+  const done = Promise.all(Array.from({ length: slots }, () => worker(state))).finally(async () => {
     clearInterval(interval);
-    await shared.close();
-  }
+    if (closeStore) await shared.close();
+  });
+
+  return { stop, done };
 }
 
-main().catch((error) => { console.error(error.message); process.exitCode = 1; });
+async function main() {
+  const handle = await startWorkerLoop({ initStore: true, closeStore: true });
+  process.once('SIGINT', handle.stop);
+  process.once('SIGTERM', handle.stop);
+  await handle.done;
+}
+
+module.exports = { startWorkerLoop };
+
+if (require.main === module) {
+  main().catch(async (error) => {
+    console.error(error.message);
+    await Promise.resolve(shared.close()).catch(() => {});
+    process.exitCode = 1;
+  });
+}
 

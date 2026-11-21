@@ -29,7 +29,11 @@ services:
         value: "true"
       - key: TRUST_PROXY
         value: "1"
+      - key: PUPPETEER_HEADLESS
+        value: "true"
       - key: PUPPETEER_NO_SANDBOX
+        value: "true"
+      - key: EMBEDDED_WORKER
         value: "true"
       - key: WORKER_RUN_SLOTS
         value: "1"
